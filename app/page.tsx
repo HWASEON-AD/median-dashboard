@@ -294,13 +294,22 @@ export default function Home() {
             {/* KPI */}
             <div className="grid grid-cols-4 gap-3 mb-5">
               {[
-                { label: '전체 키워드', val: `${posts.length}개`, cls: 'bg-blue-50 text-blue-700' },
-                { label: '노출중 키워드', val: `${exposedCount}개`, cls: 'bg-green-50 text-green-700' },
-                { label: '평균 노출일수', val: `${avgDays}일`, cls: 'bg-yellow-50 text-yellow-700' },
-                { label: '총 방문자수', val: totalClicks > 0 ? totalClicks.toLocaleString() : '-', cls: 'bg-purple-50 text-purple-700' },
+                { label: '전체 키워드', val: `${posts.length}개`, cls: 'bg-blue-50 text-blue-700', tip: '관리자에 등록된 전체 키워드(포스트) 수. 상태(노출중·미노출·종료) 무관 전체 합산.' },
+                { label: '노출중 키워드', val: `${exposedCount}개`, cls: 'bg-green-50 text-green-700', tip: '현재 상태가 노출중인 키워드 수. 당일 3번 체크 중 한 번이라도 노출 확인되면 하루 종일 노출중 유지.' },
+                { label: '평균 노출일수', val: `${avgDays}일`, cls: 'bg-yellow-50 text-yellow-700', tip: '전체 키워드의 누적 노출일수 평균. 선택한 날짜 범위와 무관하게 전체 기간 기준으로 계산.' },
+                { label: '총 방문자수', val: totalClicks > 0 ? totalClicks.toLocaleString() : '-', cls: 'bg-purple-50 text-purple-700', tip: 'hwaseon-image 제품링크가 연결된 키워드의 방문자수 합계. 제품링크 미등록 키워드는 제외.' },
               ].map(c => (
                 <div key={c.label} className={`rounded-lg p-3 ${c.cls}`}>
-                  <div className="text-xs opacity-70 mb-1">{c.label}</div>
+                  <div className="flex items-center gap-1 mb-1">
+                    <span className="text-xs opacity-70">{c.label}</span>
+                    <div className="relative group flex-shrink-0">
+                      <span className="w-3.5 h-3.5 rounded-full border border-current opacity-50 flex items-center justify-center text-[9px] font-bold cursor-help leading-none">?</span>
+                      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block z-50 w-48 bg-gray-800 text-white text-[11px] rounded-lg px-2.5 py-2 leading-relaxed shadow-lg pointer-events-none">
+                        {c.tip}
+                        <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-800" />
+                      </div>
+                    </div>
+                  </div>
                   <div className="text-xl font-bold">{c.val}</div>
                 </div>
               ))}
@@ -318,7 +327,7 @@ export default function Home() {
                   <div className="inline-block min-w-full">
                     {/* 날짜 헤더 */}
                     <div className="flex gap-0.5 mb-1">
-                      <div className="w-36 flex-shrink-0" />
+                      <div className="w-44 flex-shrink-0" />
                       {days.map(d => (
                         <div key={d} className="w-5 flex-shrink-0 text-center text-gray-400" style={{ fontSize: '9px' }}>
                           {d.slice(8)}
@@ -332,15 +341,19 @@ export default function Home() {
                       return (
                         <div key={p.id}
                           onClick={() => handleKeywordClick(p)}
-                          className={`flex items-center gap-0.5 mb-0.5 cursor-pointer rounded-sm ${isSelected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
-                          <div className={`w-36 flex-shrink-0 text-xs truncate pr-2 flex items-center gap-1 ${isSelected ? 'text-blue-700 font-medium' : 'text-gray-600'}`}>
-                            <span className="truncate">{p.keyword}</span>
-                            <span className="flex-shrink-0 text-gray-400">{p.amos_daily_exposure.length}일</span>
-                            {p.total_views != null && <span className="flex-shrink-0 text-gray-400">{p.total_views.toLocaleString()}</span>}
+                          className={`flex items-center gap-0.5 mb-1 cursor-pointer rounded-md px-1 py-0.5 ${isSelected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
+                          <div className={`w-44 flex-shrink-0 pr-2 min-w-0 ${isSelected ? 'text-blue-700' : 'text-gray-700'}`}>
+                            <div className="text-xs font-medium truncate leading-tight">{p.keyword}</div>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className="text-[10px] text-gray-400">{p.amos_daily_exposure.length}일</span>
+                              {p.total_views != null && (
+                                <span className="text-[10px] text-gray-400">{p.total_views.toLocaleString()}회</span>
+                              )}
+                            </div>
                           </div>
                           {days.map(d => (
                             <div key={d} title={`${p.keyword} ${d}`}
-                              className={`w-5 h-4 rounded-sm flex-shrink-0 ${expSet.has(d) ? 'bg-green-500' : 'bg-gray-100'}`} />
+                              className={`w-5 h-5 rounded flex-shrink-0 ${expSet.has(d) ? 'bg-green-500' : 'bg-gray-100'}`} />
                           ))}
                         </div>
                       )
