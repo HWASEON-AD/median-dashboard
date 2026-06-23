@@ -312,8 +312,9 @@ def _scroll_and_find(driver, url: str):
 
 def _capture_with_css_border(driver, link_element, keyword: str) -> bytes | None:
     """
-    매칭된 포스팅 카드에 빨간 테두리를 두르고 '요소 전체'를 캡처한다.
-    요소 스크린샷이라 카드가 뷰포트(높이)보다 커도 잘리지 않는다.
+    매칭된 포스팅 카드를 화면 '중앙'으로 스크롤해 빨간 테두리를 그린 뒤
+    전체 화면(뷰포트)을 캡처한다. 카드가 가운데 오므로 잘리지 않고
+    주변 검색결과 맥락까지 함께 보인다.
     """
     # 1. 포스팅 카드 요소 탐색
     try:
@@ -328,25 +329,32 @@ def _capture_with_css_border(driver, link_element, keyword: str) -> bytes | None
     except Exception:
         pass
 
-    # 3. 카드 요소에 직접 빨간 테두리 (레이아웃 영향 없는 outline)
+    # 3. 빨간 테두리 오버레이 (현재 위치 기준, position:fixed)
+    overlay = None
     try:
-        driver.execute_script(
-            "arguments[0].style.outline='4px solid #FF0000';"
-            "arguments[0].style.outlineOffset='-2px';",
-            post_el,
-        )
-        time.sleep(0.2)
+        overlay = driver.execute_script("""
+            var r = arguments[0].getBoundingClientRect();
+            var div = document.createElement('div');
+            div.style.cssText = [
+                'position:fixed','pointer-events:none','z-index:999999',
+                'border:3px solid #FF0000','box-sizing:border-box',
+                'left:' + r.left + 'px','top:' + r.top + 'px',
+                'width:' + r.width + 'px','height:' + r.height + 'px'
+            ].join(';');
+            document.body.appendChild(div);
+            return div;
+        """, post_el)
     except Exception:
         pass
 
-    # 4. 요소 전체 캡처 (뷰포트보다 커도 잘리지 않음). 실패 시 뷰포트 캡처 폴백
+    # 4. 전체 화면(뷰포트) 캡처 — 매칭 글이 화면 중앙에 주변 맥락과 함께 보임
+    screenshot_bytes = driver.get_screenshot_as_png()
     try:
-        img = post_el.screenshot_as_png
-        if img:
-            return img
+        if overlay:
+            driver.execute_script("arguments[0].remove();", overlay)
     except Exception:
         pass
-    return driver.get_screenshot_as_png()
+    return screenshot_bytes
 
 
 # ── 노출 확인 ──────────────────────────────────────────────────
