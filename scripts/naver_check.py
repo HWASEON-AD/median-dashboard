@@ -378,15 +378,25 @@ def check_exposed(driver, keyword: str, blog_url: str) -> tuple[bool, bytes | No
 
     link, section = _scroll_and_find(driver, blog_url)
 
-    # [진단] CI 환경이 네이버 결과를 실제로 받는지 확인용 로그
+    # [진단] CI가 카페 결과를 아예 못 받는지 vs 늦게 받는지 판별
     try:
+        parsed_dbg = parse_url(blog_url)
+        pno = parsed_dbg.get('post_no', '')
+        cafe_id = parsed_dbg.get('id', '')
+        # 지연로딩 가능성 배제: 추가 대기 + 스크롤 후 재측정
+        for _ in range(6):
+            driver.execute_script("window.scrollBy(0, 1500);")
+            time.sleep(1.0)
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(2.0)
         src = driver.page_source
-        pno = parse_url(blog_url).get('post_no', '')
         anchors = driver.find_elements(By.TAG_NAME, "a")
-        hit = sum(1 for a in anchors if pno and (a.get_attribute("href") or "") and pno in (a.get_attribute("href") or ""))
-        log(f"  [진단] page_len={len(src)} / post_no({pno})_in_page={pno in src} / 앵커수={len(anchors)} / post_no매칭앵커={hit} / 차단키워드={'네이버를 이용해' in src or 'captcha' in src.lower() or '비정상적' in src}")
+        hrefs = [a.get_attribute("href") or "" for a in anchors]
+        cafe_anchors = sum(1 for h in hrefs if 'cafe.naver' in h)
+        blog_anchors = sum(1 for h in hrefs if 'blog.naver' in h)
+        log(f"  [진단2] page_len={len(src)} / 총앵커={len(anchors)} / 카페앵커={cafe_anchors} / 블로그앵커={blog_anchors} / post_no({pno})_in_page={pno in src} / cafe_id({cafe_id})_in_page={cafe_id in src} / '치약'_in_page={'치약' in src}")
     except Exception as e:
-        log(f"  [진단] 로그 실패: {e}")
+        log(f"  [진단2] 로그 실패: {e}")
 
     if link is None:
         return False, None
