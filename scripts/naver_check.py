@@ -312,9 +312,8 @@ def _scroll_and_find(driver, url: str):
 
 def _capture_with_css_border(driver, link_element, keyword: str) -> bytes | None:
     """
-    포스팅 카드에 CSS 빨간테두리 주입 후 전체 뷰포트 캡처
-    - 섹션이 화면 상단에 보이도록 스크롤 (block:'start')
-    - 텍스트 오버레이 없음
+    매칭된 포스팅 카드에 빨간 테두리를 두르고 '요소 전체'를 캡처한다.
+    요소 스크린샷이라 카드가 뷰포트(높이)보다 커도 잘리지 않는다.
     """
     # 1. 포스팅 카드 요소 탐색
     try:
@@ -322,47 +321,32 @@ def _capture_with_css_border(driver, link_element, keyword: str) -> bytes | None
     except Exception:
         post_el = link_element
 
-    # 2. 섹션 상단이 뷰포트 상단에 오도록 스크롤
+    # 2. 카드를 화면 중앙으로 스크롤 (lazy 이미지 로드 유도)
     try:
-        driver.execute_script("arguments[0].scrollIntoView({block:'start'})", post_el)
-        time.sleep(0.5)
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'})", post_el)
+        time.sleep(0.6)
     except Exception:
         pass
 
-    # 3. CSS overlay div 주입 (position:fixed, 빨간 테두리)
-    overlay = None
+    # 3. 카드 요소에 직접 빨간 테두리 (레이아웃 영향 없는 outline)
     try:
-        overlay = driver.execute_script("""
-            var r = arguments[0].getBoundingClientRect();
-            var div = document.createElement('div');
-            div.style.cssText = [
-                'position:fixed',
-                'pointer-events:none',
-                'z-index:999999',
-                'border:3px solid #FF0000',
-                'box-sizing:border-box',
-                'left:' + r.left + 'px',
-                'top:' + r.top + 'px',
-                'width:' + r.width + 'px',
-                'height:' + r.height + 'px'
-            ].join(';');
-            document.body.appendChild(div);
-            return div;
-        """, post_el)
+        driver.execute_script(
+            "arguments[0].style.outline='4px solid #FF0000';"
+            "arguments[0].style.outlineOffset='-2px';",
+            post_el,
+        )
+        time.sleep(0.2)
     except Exception:
         pass
 
-    # 4. 뷰포트 전체 스크린샷
-    screenshot_bytes = driver.get_screenshot_as_png()
-
-    # 5. overlay 제거
+    # 4. 요소 전체 캡처 (뷰포트보다 커도 잘리지 않음). 실패 시 뷰포트 캡처 폴백
     try:
-        if overlay:
-            driver.execute_script("arguments[0].remove();", overlay)
+        img = post_el.screenshot_as_png
+        if img:
+            return img
     except Exception:
         pass
-
-    return screenshot_bytes
+    return driver.get_screenshot_as_png()
 
 
 # ── 노출 확인 ──────────────────────────────────────────────────
