@@ -8,7 +8,7 @@ interface Post {
   blog_url: string | null; hwaseon_url: string | null
   tab_type: string | null; status: string; brand: string | null
   total_views: number | null
-  amos_daily_exposure: Exposure[]
+  median_daily_exposure: Exposure[]
 }
 interface DailyCapture {
   id: string; post_id: string; date: string
@@ -140,14 +140,14 @@ export default function Home() {
 
   const exposedCount = exposedPosts.length
   const avgDays = posts.length === 0 ? 0 :
-    Math.round(posts.reduce((a, p) => a + (p.amos_daily_exposure || []).filter(e => e.is_exposed).length, 0) / posts.length)
+    Math.round(posts.reduce((a, p) => a + (p.median_daily_exposure || []).filter(e => e.is_exposed).length, 0) / posts.length)
   const totalClicks = Object.values(clicks).reduce((a, b) => a + b, 0)
 
   function inRange(e: Exposure) { return e.is_exposed && e.date >= range.start && e.date <= range.end }
 
   // 선택된 키워드 도표 데이터 (일별 노출 bar chart)
   const chartData = selectedPost ? days.map(d => {
-    const exposed = (selectedPost.amos_daily_exposure || []).some(e => e.date === d && e.is_exposed)
+    const exposed = (selectedPost.median_daily_exposure || []).some(e => e.date === d && e.is_exposed)
     return { date: d.slice(5), exposed: exposed ? 1 : 0 }
   }) : []
 
@@ -336,7 +336,7 @@ export default function Home() {
                     </div>
                     {/* 키워드 행 - 클릭 시 도표 표시 */}
                     {heatmapPosts.map(p => {
-                      const expSet = new Set((p.amos_daily_exposure || []).filter(e => inRange(e)).map(e => e.date))
+                      const expSet = new Set((p.median_daily_exposure || []).filter(e => inRange(e)).map(e => e.date))
                       const isSelected = selectedPost?.id === p.id
                       return (
                         <div key={p.id}
@@ -345,7 +345,7 @@ export default function Home() {
                           <div className={`w-44 flex-shrink-0 pr-2 min-w-0 ${isSelected ? 'text-blue-700' : 'text-gray-700'}`}>
                             <div className="text-xs font-medium truncate leading-tight">{p.keyword}</div>
                             <div className="flex items-center gap-2 mt-0.5">
-                              <span className="text-[10px] text-gray-400">{p.amos_daily_exposure.length}일</span>
+                              <span className="text-[10px] text-gray-400">{p.median_daily_exposure.length}일</span>
                               {p.total_views != null && (
                                 <span className="text-[10px] text-gray-400">{p.total_views.toLocaleString()}회</span>
                               )}
@@ -393,7 +393,7 @@ export default function Home() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm mb-5">
                   <div><span className="text-gray-400 text-xs block">제품</span>{selectedPost.product || '-'}</div>
                   <div><span className="text-gray-400 text-xs block">노출탭</span>{selectedPost.tab_type || '-'}</div>
-                  <div><span className="text-gray-400 text-xs block">노출일수</span>{(selectedPost.amos_daily_exposure || []).filter(e => e.is_exposed).length}일</div>
+                  <div><span className="text-gray-400 text-xs block">노출일수</span>{(selectedPost.median_daily_exposure || []).filter(e => e.is_exposed).length}일</div>
                   <div><span className="text-gray-400 text-xs block">총 클릭수</span>
                     {!selectedPost.hwaseon_url
                       ? <span className="text-gray-400 text-xs">조회수 트래킹 불가<br/><span className="text-gray-300">(image호스팅 연결x)</span></span>

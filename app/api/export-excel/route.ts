@@ -21,14 +21,14 @@ export async function GET(req: NextRequest) {
   const end = searchParams.get('end') || today
 
   const { data: posts } = await supabaseAdmin
-    .from('amos_posts')
+    .from('median_posts')
     .select('*')
     .order('brand')
     .order('product')
     .order('keyword')
 
   const { data: exposures } = await supabaseAdmin
-    .from('amos_daily_exposure')
+    .from('median_daily_exposure')
     .select('post_id, date')
     .gte('date', start)
     .lte('date', end)
@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
   const headers = ['브랜드', '제품', '키워드', '노출탭', '발행URL', '제품링크URL', ...allDates]
   const dataRows = (posts || []).map(p => {
     const row: (string)[] = [
-      p.brand || '아모스',
+      p.brand || '메디안',
       p.product || '',
       p.keyword,
       p.tab_type || '',
@@ -75,7 +75,7 @@ export async function GET(req: NextRequest) {
   return new NextResponse(binary, {
     headers: {
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'Content-Disposition': `attachment; filename="amos_data_${end}.xlsx"`,
+      'Content-Disposition': `attachment; filename="median_data_${end}.xlsx"`,
     },
   })
 }

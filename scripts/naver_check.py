@@ -2,9 +2,9 @@
 """
 naver_check.py
 매일 오후 4시(KST) GitHub Actions에서 자동 실행.
-Supabase amos_posts에서 '노출중' 키워드를 읽어
+Supabase median_posts에서 '노출중' 키워드를 읽어
 네이버 모바일 검색으로 발행URL 노출 여부를 확인하고
-amos_daily_exposure에 기록한다.
+median_daily_exposure에 기록한다.
 """
 
 import os
@@ -51,12 +51,14 @@ def log(msg: str):
 
 # ── Supabase 연동 ──────────────────────────────────────────────
 
-def get_posts() -> list[dict]:
-    """blog_url 있는 포스트 전체 조회 (상태 무관)"""
+def get_posts(post_id: str | None = None) -> list[dict]:
+    """blog_url 있는 포스트 조회 (상태 무관). post_id 지정 시 그 1건만 (즉시 1회 실행용)"""
+    filter_q = f'&id=eq.{post_id}' if post_id else ''
     r = requests.get(
-        f'{SUPABASE_URL}/rest/v1/amos_posts'
+        f'{SUPABASE_URL}/rest/v1/median_posts'
         '?select=id,keyword,blog_url,tab_type,brand,product,hwaseon_url'
-        '&blog_url=not.is.null',
+        '&blog_url=not.is.null'
+        + filter_q,
         headers=SB_HEADERS,
         timeout=10
     )
@@ -69,7 +71,7 @@ def get_posts() -> list[dict]:
 def _already_exposed_today(post_id: str) -> bool:
     """당일 기준 이미 노출 기록이 있는지 확인 (오늘 3회 중 한 번이라도 있으면 True)"""
     r = requests.get(
-        f'{SUPABASE_URL}/rest/v1/amos_daily_exposure'
+        f'{SUPABASE_URL}/rest/v1/median_daily_exposure'
         f'?post_id=eq.{post_id}&date=eq.{TODAY}&select=post_id',
         headers=SB_HEADERS,
         timeout=10
@@ -82,7 +84,7 @@ def save_exposure(post_id: str, is_exposed: bool):
     당일 기준: 3회 체크 중 한 번이라도 노출되면 오늘 하루는 노출중 유지."""
     if is_exposed:
         r = requests.post(
-            f'{SUPABASE_URL}/rest/v1/amos_daily_exposure',
+            f'{SUPABASE_URL}/rest/v1/median_daily_exposure',
             headers={**SB_HEADERS, 'Prefer': 'resolution=ignore-duplicates'},
             json={'post_id': post_id, 'date': TODAY},
             timeout=10
@@ -97,7 +99,7 @@ def save_exposure(post_id: str, is_exposed: bool):
         new_status = '미노출'
 
     requests.patch(
-        f'{SUPABASE_URL}/rest/v1/amos_posts?id=eq.{post_id}',
+        f'{SUPABASE_URL}/rest/v1/median_posts?id=eq.{post_id}',
         headers=SB_HEADERS,
         json={'status': new_status},
         timeout=10
@@ -105,10 +107,10 @@ def save_exposure(post_id: str, is_exposed: bool):
 
 
 def upload_screenshot(post_id: str, img_bytes: bytes) -> str | None:
-    """Supabase Storage 'amos-captures'에 업로드, 성공 시 public URL 반환"""
+    """Supabase Storage 'median-captures'에 업로드, 성공 시 public URL 반환"""
     path = f'captures/{TODAY}/{post_id}.png'
     r = requests.post(
-        f'{SUPABASE_URL}/storage/v1/object/amos-captures/{path}',
+        f'{SUPABASE_URL}/storage/v1/object/median-captures/{path}',
         headers={
             'apikey': SUPABASE_KEY,
             'Authorization': f'Bearer {SUPABASE_KEY}',
@@ -119,14 +121,14 @@ def upload_screenshot(post_id: str, img_bytes: bytes) -> str | None:
         timeout=15
     )
     if r.ok:
-        return f'{SUPABASE_URL}/storage/v1/object/public/amos-captures/{path}'
+        return f'{SUPABASE_URL}/storage/v1/object/public/median-captures/{path}'
     return None
 
 
 def save_capture(post_id: str, brand: str | None, keyword: str, product: str | None, image_url: str):
-    """amos_daily_captures에 노출 캡처 저장 (upsert — post_id+date 충돌 시 image_url 덮어쓰기)"""
+    """median_daily_captures에 노출 캡처 저장 (upsert — post_id+date 충돌 시 image_url 덮어쓰기)"""
     r = requests.post(
-        f'{SUPABASE_URL}/rest/v1/amos_daily_captures?on_conflict=post_id,date',
+        f'{SUPABASE_URL}/rest/v1/median_daily_captures?on_conflict=post_id,date',
         headers={**SB_HEADERS, 'Prefer': 'resolution=merge-duplicates'},
         json={
             'post_id': post_id,
@@ -479,9 +481,9 @@ def get_cafe_view_count(driver, blog_url: str) -> int | None:
 
 
 def save_view_count(post_id: str, count: int):
-    """amos_posts.total_views 업데이트"""
+    """median_posts.total_views 업데이트"""
     requests.patch(
-        f'{SUPABASE_URL}/rest/v1/amos_posts?id=eq.{post_id}',
+        f'{SUPABASE_URL}/rest/v1/median_posts?id=eq.{post_id}',
         headers=SB_HEADERS,
         json={'total_views': count},
         timeout=10
@@ -490,9 +492,10 @@ def save_view_count(post_id: str, count: int):
 
 # ── 메인 ───────────────────────────────────────────────────────
 
-def main():
-    posts = get_posts()
-    log(f"체크 시작: {TODAY} / 총 {len(posts)}개")
+def main(post_id: str | None = None):
+    posts = get_posts(post_id)
+    mode = f"단일({post_id})" if post_id else "전체"
+    log(f"체크 시작: {TODAY} / 모드 {mode} / 총 {len(posts)}개")
 
     if not posts:
         log("체크할 포스트 없음 (노출중 + blog_url 있는 항목 0개)")
@@ -564,4 +567,11 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # --post-id <uuid> 또는 --post-id=<uuid> 지정 시 그 키워드 1건만 즉시 체크
+    arg_post_id = None
+    for idx, a in enumerate(sys.argv):
+        if a == '--post-id' and idx + 1 < len(sys.argv):
+            arg_post_id = sys.argv[idx + 1]
+        elif a.startswith('--post-id='):
+            arg_post_id = a.split('=', 1)[1]
+    main(arg_post_id)

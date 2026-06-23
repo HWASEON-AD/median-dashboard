@@ -40,3 +40,8 @@ scripts/run_sync.bat
 /captures/
 *.xlsx
 claude_log_*.md
+
+.vercel
+
+__pycache__/
+*.pyc

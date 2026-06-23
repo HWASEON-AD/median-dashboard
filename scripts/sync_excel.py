@@ -37,7 +37,7 @@ def parse_excel(path):
     keywords, exposures = [], []
     for row in rows[1:]:
         if not any(row): continue
-        brand = str(row[0] or '').strip() or '아모스'
+        brand = str(row[0] or '').strip() or '메디안'
         product = str(row[1] or '').strip()
         keyword = str(row[2] or '').strip()
         tab = str(row[3] or '').strip()
@@ -64,20 +64,20 @@ def parse_excel(path):
 # ── Supabase ──────────────────────────────────────────────────
 def delete_all():
     log("기존 데이터 전체 삭제 중...")
-    # amos_daily_exposure 먼저 (FK)
-    r1 = requests.delete(f'{SUPABASE_URL}/rest/v1/amos_daily_exposure?post_id=not.is.null', headers=SB, timeout=15)
-    r2 = requests.delete(f'{SUPABASE_URL}/rest/v1/amos_posts?id=not.is.null', headers=SB, timeout=15)
+    # median_daily_exposure 먼저 (FK)
+    r1 = requests.delete(f'{SUPABASE_URL}/rest/v1/median_daily_exposure?post_id=not.is.null', headers=SB, timeout=15)
+    r2 = requests.delete(f'{SUPABASE_URL}/rest/v1/median_posts?id=not.is.null', headers=SB, timeout=15)
     log(f"  exposure 삭제: {r1.status_code} / posts 삭제: {r2.status_code}")
 
 def insert_keywords(keywords):
     log(f"키워드 {len(keywords)}개 삽입 중...")
     data = [{**k, 'status': '미노출'} for k in keywords]
-    r = requests.post(f'{SUPABASE_URL}/rest/v1/amos_posts',
+    r = requests.post(f'{SUPABASE_URL}/rest/v1/median_posts',
                       headers={**SB, 'Prefer': 'return=representation'}, json=data, timeout=20)
     if r.ok:
         inserted = r.json()
         log(f"  -> {len(inserted)}개 삽입 완료")
-        return {f"{p['keyword']}|||{p.get('product') or ''}|||{p.get('brand') or '아모스'}": p['id'] for p in inserted}
+        return {f"{p['keyword']}|||{p.get('product') or ''}|||{p.get('brand') or '메디안'}": p['id'] for p in inserted}
     else:
         log(f"  insert 오류: {r.status_code} {r.text[:300]}")
         return {}
@@ -86,7 +86,7 @@ def insert_exposures(exposures, pm):
     log(f"노출기록 {len(exposures)}건 업로드 중...")
     seen, records, skip = set(), [], 0
     for e in exposures:
-        key = f"{e['keyword']}|||{e.get('product') or ''}|||{e.get('brand') or '아모스'}"
+        key = f"{e['keyword']}|||{e.get('product') or ''}|||{e.get('brand') or '메디안'}"
         pid = pm.get(key)
         if not pid: skip += 1; continue
         uniq = f"{pid}|||{e['date']}"
@@ -97,7 +97,7 @@ def insert_exposures(exposures, pm):
     ok_count = 0
     for i in range(0, len(records), 500):
         batch = records[i:i+500]
-        r = requests.post(f'{SUPABASE_URL}/rest/v1/amos_daily_exposure',
+        r = requests.post(f'{SUPABASE_URL}/rest/v1/median_daily_exposure',
                           headers={**SB, 'Prefer': 'resolution=ignore-duplicates,return=minimal'},
                           json=batch, timeout=20)
         if r.ok: ok_count += len(batch)
@@ -140,7 +140,7 @@ def check_today(keywords, pm):
     for i, kw in enumerate(keywords):
         if not kw.get('blog_url'): continue
         keyword = kw['keyword']
-        key = f"{keyword}|||{kw.get('product') or ''}|||{kw.get('brand') or '아모스'}"
+        key = f"{keyword}|||{kw.get('product') or ''}|||{kw.get('brand') or '메디안'}"
         pid = pm.get(key)
         if not pid: continue
         found = check_naver(keyword, kw['blog_url'])
@@ -151,7 +151,7 @@ def check_today(keywords, pm):
         time.sleep(0.8)
 
     if exposed_records:
-        r = requests.post(f'{SUPABASE_URL}/rest/v1/amos_daily_exposure',
+        r = requests.post(f'{SUPABASE_URL}/rest/v1/median_daily_exposure',
                           headers={**SB, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
                           json=exposed_records, timeout=20)
         log(f"오늘 노출 {len(exposed_records)}건 저장 -> {'OK' if r.ok else r.text[:100]}")

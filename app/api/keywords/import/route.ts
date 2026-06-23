@@ -12,16 +12,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: '데이터 없음' }, { status: 400 })
   }
 
-  // 전체 교체 모드: 기존 데이터 전부 삭제
+  // 전체 교체 모드: 자식 테이블 먼저 삭제 후 부모 테이블 삭제 (FK 제약 방지)
   if (replace) {
+    const { error: expErr } = await supabaseAdmin
+      .from('median_daily_exposure')
+      .delete()
+      .not('post_id', 'is', null)
+    if (expErr) return NextResponse.json({ error: expErr.message }, { status: 500 })
+
     const { error: delErr } = await supabaseAdmin
-      .from('amos_posts')
+      .from('median_posts')
       .delete()
       .not('id', 'is', null)
     if (delErr) return NextResponse.json({ error: delErr.message }, { status: 500 })
   }
 
-  const incoming = rows
+  const mapped = rows
     .filter(r => r.keyword?.trim())
     .map(r => ({
       keyword: r.keyword.trim(),
@@ -29,26 +35,31 @@ export async function POST(req: NextRequest) {
       tab_type: (r.tab_type || r.tab)?.trim() || null,
       blog_url: r.blog_url?.trim() || null,
       hwaseon_url: r.hwaseon_url?.trim() || null,
-      brand: r.brand?.trim() || '아모스',
+      brand: r.brand?.trim() || '메디안',
     }))
+
+  // 중복 키워드+제품+브랜드는 마지막 행 기준으로 유지 (엑셀 하단 행이 최신)
+  const dedupeMap = new Map<string, (typeof mapped)[number]>()
+  for (const r of mapped) {
+    dedupeMap.set(`${r.keyword}|||${r.product ?? ''}|||${r.brand}`, r)
+  }
+  const incoming = Array.from(dedupeMap.values())
 
   // 기존 데이터 조회 — keyword + product + brand 조합으로 매칭
   const { data: existing } = await supabaseAdmin
-    .from('amos_posts')
+    .from('median_posts')
     .select('id, keyword, product, brand')
 
   const existingMap = new Map<string, string>()
   for (const e of existing || []) {
-    const key = `${e.keyword}|||${e.product ?? ''}|||${e.brand ?? '아모스'}`
-    existingMap.set(key, e.id)
+    existingMap.set(`${e.keyword}|||${e.product ?? ''}|||${e.brand ?? '메디안'}`, e.id)
   }
 
   const toUpdate: { id: string; tab_type: string | null; blog_url: string | null; hwaseon_url: string | null; brand: string }[] = []
   const toInsert: { keyword: string; product: string | null; tab_type: string | null; blog_url: string | null; hwaseon_url: string | null; brand: string; status: string }[] = []
 
   for (const r of incoming) {
-    const key = `${r.keyword}|||${r.product ?? ''}|||${r.brand}`
-    const id = existingMap.get(key)
+    const id = existingMap.get(`${r.keyword}|||${r.product ?? ''}|||${r.brand}`)
     if (id) {
       toUpdate.push({ id, tab_type: r.tab_type, blog_url: r.blog_url, hwaseon_url: r.hwaseon_url, brand: r.brand })
     } else {
@@ -56,19 +67,17 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 업데이트
   for (const u of toUpdate) {
     await supabaseAdmin
-      .from('amos_posts')
+      .from('median_posts')
       .update({ tab_type: u.tab_type, blog_url: u.blog_url, hwaseon_url: u.hwaseon_url, brand: u.brand })
       .eq('id', u.id)
   }
 
-  // 신규 삽입
   let insertedCount = 0
   if (toInsert.length > 0) {
     const { data, error } = await supabaseAdmin
-      .from('amos_posts')
+      .from('median_posts')
       .insert(toInsert)
       .select()
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })

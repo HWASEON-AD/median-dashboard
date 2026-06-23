@@ -7,7 +7,7 @@ interface Keyword {
   id: string; keyword: string; product: string | null
   blog_url: string | null; hwaseon_url: string | null
   tab_type: string | null; status: string; brand: string | null
-  amos_daily_exposure: Exposure[]
+  median_daily_exposure: Exposure[]
 }
 
 const STATUSES = ['미노출', '노출중', '종료', '진행X']
@@ -135,9 +135,18 @@ export default function AdminPage() {
 
   useEffect(() => { load() }, [load])
 
+  // 키워드 수정/추가 후 즉시 1회 노출 체크 트리거 (fire-and-forget, 실패해도 흐름 유지)
+  function triggerCheck(postId: string) {
+    fetch('/api/trigger-check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ post_id: postId }) })
+      .catch(e => console.error('trigger-check 실패', e))
+  }
+
   async function save(id: string) {
     const r = await fetch(`/api/keywords/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(edit) })
-    if (r.ok) { setEditId(null); load() } else flash('저장 실패', false)
+    if (r.ok) {
+      triggerCheck(id)  // 수정 성공 후 무조건 1회 트리거
+      setEditId(null); load()
+    } else flash('저장 실패', false)
   }
 
   async function del(id: string, kw: string) {
@@ -149,7 +158,13 @@ export default function AdminPage() {
   async function add() {
     if (!newRow.keyword.trim()) return flash('키워드 필수', false)
     const r = await fetch('/api/keywords', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newRow) })
-    if (r.ok) { setNew({ keyword: '', product: '', blog_url: '', hwaseon_url: '', tab_type: '', brand: '메디안' }); load() } else flash('추가 실패', false)
+    if (r.ok) {
+      // POST /api/keywords는 생성된 단건 row를 반환하므로 id 추출
+      const created = await r.json().catch(() => null)
+      // id가 있을 때만 트리거 (빈 문자열이면 GitHub Actions가 0건 매칭으로 헛돌므로 호출하지 않음)
+      if (created?.id) triggerCheck(created.id)  // 추가 성공 후 새 post id로 1회 트리거
+      setNew({ keyword: '', product: '', blog_url: '', hwaseon_url: '', tab_type: '', brand: '메디안' }); load()
+    } else flash('추가 실패', false)
   }
 
   async function importRows(data: { keyword: string; product: string; tab_type: string; blog_url: string; hwaseon_url: string; brand: string }[]) {
@@ -347,7 +362,7 @@ export default function AdminPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {filtered.map((row, i) => {
-                    const exposureDays = (row.amos_daily_exposure || []).filter(e => e.is_exposed).length
+                    const exposureDays = (row.median_daily_exposure || []).filter(e => e.is_exposed).length
                     return (
                       <tr key={row.id} className="hover:bg-gray-50">
                         {editId === row.id ? (

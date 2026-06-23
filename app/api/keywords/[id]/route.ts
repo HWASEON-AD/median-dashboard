@@ -10,7 +10,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   }
 
   const { data, error } = await supabaseAdmin
-    .from('amos_posts')
+    .from('median_posts')
     .update(updates)
     .eq('id', params.id)
     .select()
@@ -22,7 +22,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
 export async function DELETE(_req: NextRequest, { params }: { params: { id: string } }) {
   const { error } = await supabaseAdmin
-    .from('amos_posts')
+    .from('median_posts')
     .delete()
     .eq('id', params.id)
 

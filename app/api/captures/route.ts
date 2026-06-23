@@ -8,7 +8,7 @@ export async function GET(req: NextRequest) {
   let date = dateParam
   if (!date) {
     const { data: latest } = await supabaseAdmin
-      .from('amos_daily_captures')
+      .from('median_daily_captures')
       .select('date')
       .order('date', { ascending: false })
       .limit(1)
@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
   }
 
   const { data, error } = await supabaseAdmin
-    .from('amos_daily_captures')
+    .from('median_daily_captures')
     .select('id, post_id, date, brand, keyword, product, image_url, captured_at')
     .eq('date', date)
     .order('brand', { ascending: true })
