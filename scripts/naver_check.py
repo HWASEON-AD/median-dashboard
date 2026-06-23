@@ -378,6 +378,16 @@ def check_exposed(driver, keyword: str, blog_url: str) -> tuple[bool, bytes | No
 
     link, section = _scroll_and_find(driver, blog_url)
 
+    # [진단] CI 환경이 네이버 결과를 실제로 받는지 확인용 로그
+    try:
+        src = driver.page_source
+        pno = parse_url(blog_url).get('post_no', '')
+        anchors = driver.find_elements(By.TAG_NAME, "a")
+        hit = sum(1 for a in anchors if pno and (a.get_attribute("href") or "") and pno in (a.get_attribute("href") or ""))
+        log(f"  [진단] page_len={len(src)} / post_no({pno})_in_page={pno in src} / 앵커수={len(anchors)} / post_no매칭앵커={hit} / 차단키워드={'네이버를 이용해' in src or 'captcha' in src.lower() or '비정상적' in src}")
+    except Exception as e:
+        log(f"  [진단] 로그 실패: {e}")
+
     if link is None:
         return False, None
 
