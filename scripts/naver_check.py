@@ -323,9 +323,15 @@ def _capture_with_css_border(driver, link_element, keyword: str) -> bytes | None
         post_el = link_element
 
     # 2. 카드를 화면 중앙으로 스크롤 (lazy 이미지 로드 유도)
+    #    '샴푸추천'처럼 상단에 큰 이미지 섹션이 있는 키워드는, 중앙정렬 후 대기 중
+    #    이미지 그리드가 lazy-load로 펼쳐지며 매칭 글을 화면 아래로 밀어내 잘리는
+    #    문제가 있었다. → 콘텐츠가 펼쳐질 시간을 더 주고, 캡처 직전에 다시 한 번
+    #    중앙정렬해서 어떤 키워드든 매칭 글이 화면 중앙에 오게 한다.
     try:
         driver.execute_script("arguments[0].scrollIntoView({block:'center'})", post_el)
-        time.sleep(0.6)
+        time.sleep(1.2)  # 이미지 섹션 등 lazy 콘텐츠가 펼쳐질 시간 확보
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'})", post_el)
+        time.sleep(0.4)  # 재정렬 후 안정화
     except Exception:
         pass
 
