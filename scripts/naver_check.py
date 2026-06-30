@@ -164,6 +164,22 @@ def create_driver():
 
 # ── URL 파싱 ───────────────────────────────────────────────────
 
+def _split_urls(raw: str) -> list[str]:
+    """발행URL 칸을 콤마(,)로 분리해 여러 URL 리스트로 반환.
+    - 각 URL의 앞뒤 공백은 자동 제거
+    - 빈 값·중복은 제거, 사용자가 적은 순서(앞쪽 우선)는 유지"""
+    if not raw:
+        return []
+    seen = set()
+    urls = []
+    for part in raw.split(','):
+        u = part.strip()
+        if u and u not in seen:
+            seen.add(u)
+            urls.append(u)
+    return urls
+
+
 def parse_url(url: str) -> dict:
     """blog/cafe URL에서 post_no, blog_id 추출"""
     result = {"type": "unknown", "id": "", "post_no": ""}
@@ -384,7 +400,15 @@ def _wait_for_ugc(driver, timeout: float = 12.0):
 
 
 def check_exposed(driver, keyword: str, blog_url: str) -> tuple[bool, bytes | None]:
-    """네이버 모바일 검색 → URL 매칭 → 노출 여부 + 전체화면+CSS빨간테두리 캡처 반환"""
+    """네이버 모바일 검색 → URL 매칭 → 노출 여부 + 전체화면+CSS빨간테두리 캡처 반환.
+
+    발행URL 칸에 콤마(,)로 여러 URL을 넣으면, 그중 하나라도 검색결과에 노출돼 있으면
+    노출로 보고 캡처한다. 여러 개가 동시에 노출된 경우 사용자가 적은 '앞쪽' URL을 우선해
+    그것만 캡처한다."""
+    urls = _split_urls(blog_url)
+    if not urls:
+        return False, None
+
     try:
         driver.get(f"https://m.search.naver.com/search.naver?query={urllib.parse.quote(keyword)}")
         # 인기글(UGC)이 자바스크립트로 렌더 완료될 때까지 대기 (과거 미노출 오탐 원인)
@@ -393,13 +417,24 @@ def check_exposed(driver, keyword: str, blog_url: str) -> tuple[bool, bytes | No
         log(f"  검색 실패: {e}")
         return False, None
 
-    link, section = _scroll_and_find(driver, blog_url)
+    # 앞쪽 URL부터 순서대로 확인 → 먼저 매칭되는 것을 캡처하고 종료
+    for idx, url in enumerate(urls):
+        if idx > 0:
+            # 다음 URL은 페이지 맨 위에서 다시 탐색 (lazy 로드/스크롤 위치 일관성)
+            try:
+                driver.execute_script("window.scrollTo(0, 0);")
+                time.sleep(0.5)
+            except Exception:
+                pass
 
-    if link is None:
-        return False, None
+        link, section = _scroll_and_find(driver, url)
+        if link is not None:
+            if len(urls) > 1:
+                log(f"  매칭된 발행URL: {url}")
+            img_bytes = _capture_with_css_border(driver, link, keyword)
+            return True, img_bytes
 
-    img_bytes = _capture_with_css_border(driver, link, keyword)
-    return True, img_bytes
+    return False, None
 
 
 # ── hwaseon-image 트래킹 ──────────────────────────────────────
@@ -526,6 +561,9 @@ def main(post_id: str | None = None):
         for i, post in enumerate(posts):
             kw = post['keyword']
             url = post['blog_url']
+            # 발행URL이 콤마로 여러 개면 보조 로직(카페 조회수 등)은 앞쪽 URL 기준
+            url_list = _split_urls(url)
+            primary_url = url_list[0] if url_list else url
             post_id = post['id']
             log(f"[{i+1}/{len(posts)}] {kw}")
 
@@ -545,9 +583,9 @@ def main(post_id: str | None = None):
                     save_view_count(post_id, views)
 
             # 카페 글이면 조회수 추가 수집 (hwaseon-image 없을 경우 fallback)
-            parsed = parse_url(url)
+            parsed = parse_url(primary_url)
             if parsed['type'] == 'cafe' and not hwaseon_url:
-                view_count = get_cafe_view_count(driver, url)
+                view_count = get_cafe_view_count(driver, primary_url)
                 if view_count is not None:
                     save_view_count(post_id, view_count)
                     log(f"  카페 조회수: {view_count}")
