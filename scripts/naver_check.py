@@ -326,54 +326,89 @@ def _scroll_and_find(driver, url: str):
     return None, None
 
 
+# 매칭 카드를 뷰포트 '정중앙'으로 스크롤하는 JS.
+#  - scrollIntoView({block:'center'})는 네이버 모바일의 sticky 헤더/스크롤 앵커
+#    때문에 실제 중앙정렬이 안 돼 글이 화면 위로 밀려 잘리곤 했다.
+#  - 그래서 요소의 '문서 절대 위치'를 직접 계산해 window.scrollTo로 중앙에 맞춘다.
+#  - 카드가 뷰포트보다 크면(드묾) 상단을 헤더 아래로 살짝 내려 잘림을 줄인다.
+_CENTER_JS = """
+    var el = arguments[0];
+    var vh = window.innerHeight;
+    var r = el.getBoundingClientRect();
+    var absTop = r.top + window.pageYOffset;
+    var target;
+    if (r.height <= vh * 0.85) {
+        target = absTop - (vh - r.height) / 2;   // 요소 중심을 뷰포트 중심에
+    } else {
+        target = absTop - vh * 0.12;             // 큰 요소: 상단을 살짝 내려 헤더 회피
+    }
+    window.scrollTo(0, Math.max(0, target));
+"""
+
+
 def _capture_with_css_border(driver, link_element, keyword: str) -> bytes | None:
     """
-    매칭된 포스팅 카드를 화면 '중앙'으로 스크롤해 빨간 테두리를 그린 뒤
-    전체 화면(뷰포트)을 캡처한다. 카드가 가운데 오므로 잘리지 않고
-    주변 검색결과 맥락까지 함께 보인다.
+    매칭된 포스팅 카드를 뷰포트 '정중앙'으로 옮기고, 그 카드 자체에 빨간
+    테두리(outline)를 직접 입힌 뒤 전체 화면(뷰포트)을 캡처한다.
+    카드가 가운데 오므로 잘리지 않고 주변 검색결과 맥락도 함께 보인다.
     """
-    # 1. 포스팅 카드 요소 탐색
+    # 1. URL이 들어있는 포스팅 카드 요소 탐색
     try:
         post_el = _find_post_element(driver, link_element)
     except Exception:
         post_el = link_element
 
-    # 2. 카드를 화면 중앙으로 스크롤 (lazy 이미지 로드 유도)
-    #    '샴푸추천'처럼 상단에 큰 이미지 섹션이 있는 키워드는, 중앙정렬 후 대기 중
-    #    이미지 그리드가 lazy-load로 펼쳐지며 매칭 글을 화면 아래로 밀어내 잘리는
-    #    문제가 있었다. → 콘텐츠가 펼쳐질 시간을 더 주고, 캡처 직전에 다시 한 번
-    #    중앙정렬해서 어떤 키워드든 매칭 글이 화면 중앙에 오게 한다.
+    # 2. 카드를 화면 중앙으로 (수동 좌표 계산) — lazy 콘텐츠 로드 시간도 확보
+    #    lazy-load로 글이 재정렬돼 밀릴 수 있으므로 대기 후 한 번 더 중앙정렬한다.
     try:
-        driver.execute_script("arguments[0].scrollIntoView({block:'center'})", post_el)
+        driver.execute_script(_CENTER_JS, post_el)
         time.sleep(1.2)  # 이미지 섹션 등 lazy 콘텐츠가 펼쳐질 시간 확보
-        driver.execute_script("arguments[0].scrollIntoView({block:'center'})", post_el)
+        driver.execute_script(_CENTER_JS, post_el)
         time.sleep(0.4)  # 재정렬 후 안정화
     except Exception:
         pass
 
-    # 3. 빨간 테두리 오버레이 (현재 위치 기준, position:fixed)
-    overlay = None
+    # 3. 테두리를 '그 블럭 자체'에 직접 입힌다 (outline).
+    #    - 별도 fixed 오버레이 박스를 좌표로 띄우면, 측정 직후 lazy 콘텐츠가 더
+    #      로드되어 글이 밀릴 때 박스만 옛 좌표에 남아 테두리가 어긋났다.
+    #    - outline은 요소에 직접 붙으므로 글이 밀려도 항상 블럭에 딱 붙어 있고,
+    #      border와 달리 레이아웃(크기)도 밀지 않는다.
+    old_outline = None
     try:
-        overlay = driver.execute_script("""
-            var r = arguments[0].getBoundingClientRect();
-            var div = document.createElement('div');
-            div.style.cssText = [
-                'position:fixed','pointer-events:none','z-index:999999',
-                'border:3px solid #FF0000','box-sizing:border-box',
-                'left:' + r.left + 'px','top:' + r.top + 'px',
-                'width:' + r.width + 'px','height:' + r.height + 'px'
-            ].join(';');
-            document.body.appendChild(div);
-            return div;
+        old_outline = driver.execute_script("""
+            var el = arguments[0];
+            var prev = {
+                outline: el.style.outline,
+                outlineOffset: el.style.outlineOffset,
+                borderRadius: el.style.borderRadius
+            };
+            el.style.outline = '3px solid #FF0000';
+            el.style.outlineOffset = '-3px';   // 안쪽으로 그려 카드 경계에 딱 맞춤
+            el.style.borderRadius = '0px';
+            return prev;
         """, post_el)
     except Exception:
         pass
 
-    # 4. 전체 화면(뷰포트) 캡처 — 매칭 글이 화면 중앙에 주변 맥락과 함께 보임
-    screenshot_bytes = driver.get_screenshot_as_png()
+    # 4. 테두리 입힌 그 블럭을 다시 화면 중앙으로 (그 사이 밀렸을 수 있으므로)
     try:
-        if overlay:
-            driver.execute_script("arguments[0].remove();", overlay)
+        driver.execute_script(_CENTER_JS, post_el)
+        time.sleep(0.3)
+    except Exception:
+        pass
+
+    # 5. 전체 화면(뷰포트) 캡처 — 매칭 글이 중앙에 테두리와 함께 보임
+    screenshot_bytes = driver.get_screenshot_as_png()
+
+    # 6. 원래 스타일 복구
+    try:
+        if old_outline is not None:
+            driver.execute_script("""
+                var el = arguments[0], prev = arguments[1];
+                el.style.outline = prev.outline || '';
+                el.style.outlineOffset = prev.outlineOffset || '';
+                el.style.borderRadius = prev.borderRadius || '';
+            """, post_el, old_outline)
     except Exception:
         pass
     return screenshot_bytes
