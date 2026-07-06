@@ -11,6 +11,8 @@ import os
 import sys
 import time
 import re
+import math
+import base64
 import urllib.parse
 from datetime import date, datetime
 
@@ -106,9 +108,10 @@ def save_exposure(post_id: str, is_exposed: bool):
     )
 
 
-def upload_screenshot(post_id: str, img_bytes: bytes) -> str | None:
-    """Supabase Storage 'median-captures'에 업로드, 성공 시 public URL 반환"""
-    path = f'captures/{TODAY}/{post_id}.png'
+def upload_screenshot(post_id: str, img_bytes: bytes, suffix: str = "") -> str | None:
+    """Supabase Storage 'median-captures'에 업로드, 성공 시 public URL 반환.
+    suffix='_full' 이면 전체페이지 캡처를 별도 파일로 저장한다."""
+    path = f'captures/{TODAY}/{post_id}{suffix}.png'
     r = requests.post(
         f'{SUPABASE_URL}/storage/v1/object/median-captures/{path}',
         headers={
@@ -118,28 +121,44 @@ def upload_screenshot(post_id: str, img_bytes: bytes) -> str | None:
             'x-upsert': 'true',
         },
         data=img_bytes,
-        timeout=15
+        timeout=20
     )
     if r.ok:
         return f'{SUPABASE_URL}/storage/v1/object/public/median-captures/{path}'
     return None
 
 
-def save_capture(post_id: str, brand: str | None, keyword: str, product: str | None, image_url: str):
-    """median_daily_captures에 노출 캡처 저장 (upsert — post_id+date 충돌 시 image_url 덮어쓰기)"""
-    r = requests.post(
-        f'{SUPABASE_URL}/rest/v1/median_daily_captures?on_conflict=post_id,date',
-        headers={**SB_HEADERS, 'Prefer': 'resolution=merge-duplicates'},
-        json={
-            'post_id': post_id,
-            'date': TODAY,
-            'brand': brand,
-            'keyword': keyword,
-            'product': product,
-            'image_url': image_url,
-        },
-        timeout=10
-    )
+def save_capture(post_id: str, brand: str | None, keyword: str, product: str | None,
+                 image_url: str, full_image_url: str | None = None):
+    """median_daily_captures에 노출 캡처 저장 (upsert — post_id+date 충돌 시 덮어쓰기).
+
+    full_image_url(전체페이지 세로 캡처)은 DB에 full_image_url 컬럼이 있을 때만 저장된다.
+    아직 컬럼이 없어 저장이 실패하면 그 필드를 빼고 재시도하여 기본 캡처는 반드시 남긴다."""
+    payload = {
+        'post_id': post_id,
+        'date': TODAY,
+        'brand': brand,
+        'keyword': keyword,
+        'product': product,
+        'image_url': image_url,
+    }
+    if full_image_url:
+        payload['full_image_url'] = full_image_url
+
+    def _post(body):
+        return requests.post(
+            f'{SUPABASE_URL}/rest/v1/median_daily_captures?on_conflict=post_id,date',
+            headers={**SB_HEADERS, 'Prefer': 'resolution=merge-duplicates'},
+            json=body,
+            timeout=10
+        )
+
+    r = _post(payload)
+    # full_image_url 컬럼이 아직 없어서 실패하면 그 필드 빼고 재시도 (기본 캡처는 보존)
+    if not r.ok and 'full_image_url' in payload and 'full_image_url' in (r.text or ''):
+        log("  full_image_url 컬럼 없음 → 해당 필드 제외 후 재저장")
+        payload.pop('full_image_url', None)
+        r = _post(payload)
     if not r.ok:
         log(f"  캡처 DB 저장 실패: {r.status_code} {r.text[:80]}")
 
@@ -393,11 +412,49 @@ _CENTER_JS = """
 """
 
 
-def _capture_with_css_border(driver, link_element, keyword: str) -> bytes | None:
+def _capture_full_page(driver) -> bytes | None:
+    """페이지 전체(세로 스크롤 끝까지)를 한 장으로 캡처한다.
+
+    타겟팅(빨간박스)이 혹시 틀리더라도, 전체 검색결과 페이지를 통으로 남겨두면
+    노출 여부를 사람이 눈으로 확인할 수 있는 '안전장치' 스냅샷이 된다.
+    outline이 아직 입혀진 상태에서 호출하면 전체 페이지 안에도 빨간박스가 함께 남는다."""
+    try:
+        # lazy-load 이미지들을 강제로 로드시키기 위해 페이지 끝까지 훑고 위로 복귀
+        h = driver.execute_script("return document.body.scrollHeight") or 0
+        y = 0
+        while y < h and y < 30000:
+            driver.execute_script(f"window.scrollTo(0,{y});")
+            time.sleep(0.2)
+            y += 800
+            nh = driver.execute_script("return document.body.scrollHeight") or h
+            h = max(h, nh)
+        driver.execute_script("window.scrollTo(0,0);")
+        time.sleep(0.3)
+
+        # 문서 전체 크기를 구해 뷰포트 밖까지 통째로 캡처 (CDP)
+        metrics = driver.execute_cdp_cmd("Page.getLayoutMetrics", {})
+        size = metrics.get("cssContentSize") or metrics.get("contentSize") or {}
+        width = int(math.ceil(size.get("width") or DEVICE_WIDTH)) or DEVICE_WIDTH
+        height = int(math.ceil(size.get("height") or 0))
+        if height <= 0:
+            height = int(driver.execute_script("return document.body.scrollHeight") or 3000)
+        height = min(height, 30000)  # 과도하게 긴 페이지 상한 (파일 폭주 방지)
+        result = driver.execute_cdp_cmd("Page.captureScreenshot", {
+            "format": "png",
+            "captureBeyondViewport": True,
+            "clip": {"x": 0, "y": 0, "width": width, "height": height, "scale": 1},
+        })
+        return base64.b64decode(result["data"])
+    except Exception as e:
+        log(f"  전체페이지 캡처 실패: {str(e)[:60]}")
+        return None
+
+
+def _capture_with_css_border(driver, link_element, keyword: str):
     """
     매칭된 포스팅 카드를 뷰포트 '정중앙'으로 옮기고, 그 카드 자체에 빨간
-    테두리(outline)를 직접 입힌 뒤 전체 화면(뷰포트)을 캡처한다.
-    카드가 가운데 오므로 잘리지 않고 주변 검색결과 맥락도 함께 보인다.
+    테두리(outline)를 직접 입힌 뒤 (1) 전체 화면(뷰포트) 캡처와 (2) 전체
+    페이지 세로 캡처를 함께 반환한다.  반환: (뷰포트bytes|None, 전체페이지bytes|None)
     """
     # 1. URL이 들어있는 포스팅 카드 요소 탐색
     try:
@@ -447,7 +504,11 @@ def _capture_with_css_border(driver, link_element, keyword: str) -> bytes | None
     # 5. 전체 화면(뷰포트) 캡처 — 매칭 글이 중앙에 테두리와 함께 보임
     screenshot_bytes = driver.get_screenshot_as_png()
 
-    # 6. 원래 스타일 복구
+    # 6. 전체 페이지 세로 캡처 (안전장치) — outline이 아직 입혀진 상태에서 통째로.
+    #    이 안에서 페이지를 끝까지 스크롤하므로 반드시 뷰포트 캡처 '이후'에 한다.
+    full_bytes = _capture_full_page(driver)
+
+    # 7. 원래 스타일 복구
     try:
         if old_outline is not None:
             driver.execute_script("""
@@ -458,7 +519,7 @@ def _capture_with_css_border(driver, link_element, keyword: str) -> bytes | None
             """, post_el, old_outline)
     except Exception:
         pass
-    return screenshot_bytes
+    return screenshot_bytes, full_bytes
 
 
 # ── 노출 확인 ──────────────────────────────────────────────────
@@ -481,15 +542,16 @@ def _wait_for_ugc(driver, timeout: float = 12.0):
         time.sleep(0.5)
 
 
-def check_exposed(driver, keyword: str, blog_url: str) -> tuple[bool, bytes | None]:
-    """네이버 모바일 검색 → URL 매칭 → 노출 여부 + 전체화면+CSS빨간테두리 캡처 반환.
+def check_exposed(driver, keyword: str, blog_url: str):
+    """네이버 모바일 검색 → URL 매칭 → 노출여부 + (빨간박스 뷰포트 캡처, 전체페이지 세로 캡처) 반환.
+    반환: (is_exposed: bool, img_bytes|None, full_bytes|None)
 
     발행URL 칸에 콤마(,)로 여러 URL을 넣으면, 그중 하나라도 검색결과에 노출돼 있으면
     노출로 보고 캡처한다. 여러 개가 동시에 노출된 경우 사용자가 적은 '앞쪽' URL을 우선해
     그것만 캡처한다."""
     urls = _split_urls(blog_url)
     if not urls:
-        return False, None
+        return False, None, None
 
     try:
         driver.get(f"https://m.search.naver.com/search.naver?query={urllib.parse.quote(keyword)}")
@@ -497,7 +559,7 @@ def check_exposed(driver, keyword: str, blog_url: str) -> tuple[bool, bytes | No
         _wait_for_ugc(driver)
     except Exception as e:
         log(f"  검색 실패: {e}")
-        return False, None
+        return False, None, None
 
     # 앞쪽 URL부터 순서대로 확인 → 먼저 매칭되는 것을 캡처하고 종료
     for idx, url in enumerate(urls):
@@ -513,10 +575,10 @@ def check_exposed(driver, keyword: str, blog_url: str) -> tuple[bool, bytes | No
         if link is not None:
             if len(urls) > 1:
                 log(f"  매칭된 발행URL: {url}")
-            img_bytes = _capture_with_css_border(driver, link, keyword)
-            return True, img_bytes
+            img_bytes, full_bytes = _capture_with_css_border(driver, link, keyword)
+            return True, img_bytes, full_bytes
 
-    return False, None
+    return False, None, None
 
 
 # ── hwaseon-image 트래킹 ──────────────────────────────────────
@@ -650,10 +712,10 @@ def main(post_id: str | None = None):
             log(f"[{i+1}/{len(posts)}] {kw}")
 
             try:
-                is_exposed, img_bytes = check_exposed(driver, kw, url)
+                is_exposed, img_bytes, full_bytes = check_exposed(driver, kw, url)
             except Exception as e:
                 log(f"  오류: {e}")
-                is_exposed, img_bytes = False, None
+                is_exposed, img_bytes, full_bytes = False, None, None
 
             save_exposure(post_id, is_exposed)
 
@@ -675,13 +737,16 @@ def main(post_id: str | None = None):
             # 노출된 경우에만 캡처 저장
             if is_exposed and img_bytes:
                 image_url = upload_screenshot(post_id, img_bytes)
+                # 전체페이지 세로 캡처(안전장치)도 별도 파일로 업로드
+                full_image_url = upload_screenshot(post_id, full_bytes, suffix='_full') if full_bytes else None
                 if image_url:
                     save_capture(
                         post_id=post_id,
                         brand=post.get('brand'),
                         keyword=kw,
                         product=post.get('product'),
-                        image_url=image_url
+                        image_url=image_url,
+                        full_image_url=full_image_url,
                     )
                 else:
                     fname = re.sub(r'[\\/:*?"<>|]', '_', kw)

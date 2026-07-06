@@ -14,6 +14,7 @@ interface DailyCapture {
   id: string; post_id: string; date: string
   brand: string | null; keyword: string; product: string | null
   image_url: string
+  full_image_url?: string | null
 }
 
 function getCode(url: string | null) {
@@ -38,11 +39,11 @@ function daysIn(start: string, end: string): string[] {
   return days
 }
 
-function CapGrid({ caps, onPreview }: { caps: DailyCapture[]; onPreview: (url: string) => void }) {
+function CapGrid({ caps, onPreview }: { caps: DailyCapture[]; onPreview: (cap: DailyCapture) => void }) {
   return (
     <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 gap-3">
       {caps.map(c => (
-        <div key={c.id} onClick={() => onPreview(c.image_url)}
+        <div key={c.id} onClick={() => onPreview(c)}
           className="bg-white rounded-xl border border-gray-200 overflow-hidden cursor-pointer hover:shadow-md transition-shadow">
           <img src={c.image_url} alt={c.keyword} className="w-full object-contain bg-gray-50" loading="lazy" />
           <div className="p-2">
@@ -72,7 +73,8 @@ export default function Home() {
   const [capDate, setCapDate] = useState(toStr(new Date()))
   const [dailyCaptures, setDailyCaptures] = useState<DailyCapture[]>([])
   const [capBrand, setCapBrand] = useState<'전체' | '메디안'>('메디안')
-  const [capPreview, setCapPreview] = useState<string | null>(null)
+  const [capPreview, setCapPreview] = useState<DailyCapture | null>(null)
+  const [capFull, setCapFull] = useState(false)  // 프리뷰에서 전체페이지 보기 토글
 
   const range = rangeMode === 'custom' ? { start: customStart, end: customEnd } : calcRange(rangeMode)
   const days = daysIn(range.start, range.end)
@@ -468,7 +470,7 @@ export default function Home() {
                   <h3 className="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2">
                     메디안 <span className="text-xs font-normal text-gray-400">{medianCaps.length}건</span>
                   </h3>
-                  <CapGrid caps={medianCaps} onPreview={setCapPreview} />
+                  <CapGrid caps={medianCaps} onPreview={(c) => { setCapPreview(c); setCapFull(false) }} />
                 </div>
               )}
               {dailyCaptures.length === 0 && (
@@ -478,11 +480,30 @@ export default function Home() {
           ) : filteredCaps.length === 0 ? (
             <div className="text-center py-20 text-gray-400 text-sm">해당 날짜 캡처 없음</div>
           ) : (
-            <CapGrid caps={filteredCaps} onPreview={setCapPreview} />
+            <CapGrid caps={filteredCaps} onPreview={(c) => { setCapPreview(c); setCapFull(false) }} />
           )}
           {capPreview && (
-            <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center" onClick={() => setCapPreview(null)}>
-              <img src={capPreview} alt="preview" className="max-h-[90vh] max-w-[90vw] rounded-xl object-contain" />
+            <div className="fixed inset-0 bg-black/80 z-50 flex flex-col items-center justify-center p-4" onClick={() => setCapPreview(null)}>
+              {/* 기본(빨간박스) / 전체페이지 세로 캡처 토글 */}
+              {capPreview.full_image_url && (
+                <div className="mb-3 flex gap-2" onClick={e => e.stopPropagation()}>
+                  <button onClick={() => setCapFull(false)}
+                    className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${!capFull ? 'bg-white text-gray-900 border-white' : 'border-white/40 text-white/80 hover:bg-white/10'}`}>
+                    기본
+                  </button>
+                  <button onClick={() => setCapFull(true)}
+                    className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${capFull ? 'bg-white text-gray-900 border-white' : 'border-white/40 text-white/80 hover:bg-white/10'}`}>
+                    전체보기
+                  </button>
+                </div>
+              )}
+              <div className="overflow-auto max-h-[85vh] max-w-[95vw]" onClick={e => e.stopPropagation()}>
+                <img
+                  src={capFull && capPreview.full_image_url ? capPreview.full_image_url : capPreview.image_url}
+                  alt="preview"
+                  className={capFull ? 'w-auto max-w-[95vw] rounded-xl' : 'max-h-[85vh] max-w-[95vw] rounded-xl object-contain'}
+                />
+              </div>
             </div>
           )}
         </div>
