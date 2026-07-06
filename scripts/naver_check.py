@@ -244,23 +244,69 @@ def _find_post_element(driver, link_element):
     ayunche-naver-capture/scraper.py _find_post_element() 그대로.
     """
     return driver.execute_script("""
-        var el = arguments[0];
+        var start = arguments[0];
+        // 헤더/검색창/탭바/광고 컨테이너 여부 — 이런 블럭은 '글 카드'가 아니므로
+        // 절대 테두리 대상으로 고르지 않는다. (검색란에 빨간 테두리 쳐지던 버그 방어)
+        function headerish(node){
+            // 검색창/탭바가 들어있는 블럭 = 글 카드가 아님. 구조로만 판별한다.
+            // (클래스명 substring 매칭은 loader⊃ader, *-header 등 정상 카드를 오탐하므로 안 씀.
+            //  광고/헤더 링크는 이미 매칭 단계의 path 앵커링으로 후보에서 배제됨.)
+            if (!node || !node.querySelector) return false;
+            return !!node.querySelector('input, [role=tablist], [role=search], form[role=search]');
+        }
+        var el = start;
         while (el && el !== document.body) {
             var parent = el.parentElement;
             if (!parent) break;
             var r = el.getBoundingClientRect();
             var pr = parent.getBoundingClientRect();
-            if (r.height >= 80 && pr.height > 0 && r.height < pr.height * 0.6) {
+            if (r.height >= 80 && pr.height > 0 && r.height < pr.height * 0.6 && !headerish(el)) {
                 return el;
             }
             el = parent;
         }
-        return arguments[0];
+        return start;
     """, link_element)
 
 
+def _post_no_in_path(href_norm: str, post_no: str) -> bool:
+    """글번호(post_no)가 URL의 '글번호가 놓이는 위치'에 실제로 있는지 검사한다.
+
+    네이버 모바일 검색의 글 링크는 이제
+        m.cafe.naver.com/<카페>/<글번호>?art=<긴 base64 JWT 토큰>
+    형태라, href 안에 art= 뒤로 숫자가 잔뜩 든 base64 문자열이 붙는다.
+    예전처럼 `post_no in href` (단순 substring)로 매칭하면 그 JWT 토큰이나
+    상단 ader.naver.com 광고 링크·쿼리 문자열에 우연히 7자리 숫자열이 섞였을 때
+    엉뚱한 링크(특히 검색창/탭이 있는 상단 헤더)가 잡혀서 빨간 테두리가
+    엉뚱한 데 그려졌다. 그래서 글번호가
+      1) 경로 세그먼트(/12345 뒤에 / ? # 또는 끝), 또는
+      2) articleid/articleno 파라미터 값
+    으로 나타날 때만 진짜 매칭으로 인정한다. base64/쿼리 값 안의 우연한 숫자열은 배제."""
+    pno = re.escape(post_no)
+
+    def _hit(h: str) -> bool:
+        # 1) 경로 세그먼트: /<글번호> 뒤에 / ? # 또는 끝
+        if re.search(rf'/{pno}(?:[/?#]|$)', h):
+            return True
+        # 2) 글번호 파라미터: articleid / articleno / logno (블로그 PostView 형태)
+        if re.search(rf'(?:articleid|articleno|logno)={pno}(?:[&#]|$)', h, re.IGNORECASE):
+            return True
+        return False
+
+    if _hit(href_norm):
+        return True
+    # 퍼센트 인코딩된 클릭트래킹 경유 링크(예: ...u=...%2F<글번호>) 대비: 한 번 디코드 후 재검사
+    try:
+        decoded = urllib.parse.unquote(href_norm)
+        if decoded != href_norm and _hit(decoded):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _match_url(driver, url: str):
-    """3단계 URL 매칭"""
+    """3단계 URL 매칭. 글번호는 '경로 위치'에 있을 때만 인정(가짜 substring 매칭 배제)."""
     parsed = parse_url(url)
     post_no = parsed["post_no"]
     blog_id = parsed["id"]
@@ -287,17 +333,18 @@ def _match_url(driver, url: str):
         href_norm = href.replace("m.blog.naver.com", "blog.naver.com")
         href_norm = href_norm.replace("m.cafe.naver.com", "cafe.naver.com")
 
-        if post_no not in href_norm:
+        # 글번호가 '경로/파라미터 위치'에 실제로 있는 링크만 후보로 인정.
+        # (art= JWT 토큰·광고 링크에 숫자가 우연히 섞인 가짜 매칭을 원천 차단)
+        if not _post_no_in_path(href_norm, post_no):
             continue
 
         if blog_id and blog_id in href_norm:
-            stage1 = stage1 or link
+            stage1 = stage1 or link           # 카페/블로그 id까지 일치 = 가장 확실
         if url_type == "blog" and "blog.naver.com" in href_norm:
             stage2 = stage2 or link
         elif url_type == "cafe" and "cafe.naver.com" in href_norm:
             stage2 = stage2 or link
-        elif url_type == "cafe" and re.search(r"articleid=" + re.escape(post_no), href_norm, re.IGNORECASE):
-            stage2 = stage2 or link
+        # stage3: 도메인이 달라도 글번호가 경로에 있는 링크(리다이렉트 등) — 이제 path 앵커링돼 안전
         stage3 = stage3 or link
 
     matched = stage1 or stage2 or stage3
