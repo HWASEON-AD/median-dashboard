@@ -75,6 +75,8 @@ export default function Home() {
   const [capBrand, setCapBrand] = useState<'전체' | '메디안'>('메디안')
   const [capPreview, setCapPreview] = useState<DailyCapture | null>(null)
   const [capFull, setCapFull] = useState(false)  // 프리뷰에서 전체페이지 보기 토글
+  const [capReplaceOpen, setCapReplaceOpen] = useState(false)  // 이미지 교체 안내 패널
+  const [capReplacing, setCapReplacing] = useState(false)      // 교체 업로드 진행중
 
   const range = rangeMode === 'custom' ? { start: customStart, end: customEnd } : calcRange(rangeMode)
   const days = daysIn(range.start, range.end)
@@ -170,6 +172,31 @@ export default function Home() {
     } else {
       setSelectedPost(p)
       setSelectedProduct(p.product)
+    }
+  }
+
+  // 캡처 이미지 수동 교체: 잘못 찍힌 캡처를 사용자가 편집한 파일로 바꾼다
+  async function handleReplaceFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''  // 같은 파일 재선택도 동작하도록 초기화
+    if (!file || !capPreview) return
+    setCapReplacing(true)
+    try {
+      const fd = new FormData()
+      fd.append('id', capPreview.id)
+      fd.append('mode', capFull && capPreview.full_image_url ? 'full' : 'basic')
+      fd.append('file', file)
+      const r = await fetch('/api/captures/replace', { method: 'POST', body: fd })
+      const d = await r.json()
+      if (!r.ok) { alert(d.error || '교체에 실패했습니다.'); return }
+      const patch = d.mode === 'full' ? { full_image_url: d.url as string } : { image_url: d.url as string }
+      setDailyCaptures(prev => prev.map(c => c.id === capPreview.id ? { ...c, ...patch } : c))
+      setCapPreview(p => p ? { ...p, ...patch } : p)
+      setCapReplaceOpen(false)
+    } catch {
+      alert('네트워크 오류로 교체에 실패했습니다.')
+    } finally {
+      setCapReplacing(false)
     }
   }
 
@@ -483,7 +510,8 @@ export default function Home() {
             <CapGrid caps={filteredCaps} onPreview={(c) => { setCapPreview(c); setCapFull(false) }} />
           )}
           {capPreview && (
-            <div className="fixed inset-0 bg-black/80 z-50 flex flex-col items-center justify-center p-4" onClick={() => setCapPreview(null)}>
+            <div className="fixed inset-0 bg-black/80 z-50 flex flex-col items-center justify-center p-4"
+              onClick={() => { setCapPreview(null); setCapReplaceOpen(false) }}>
               {/* 기본(빨간박스) / 전체페이지 세로 캡처 토글 */}
               {capPreview.full_image_url && (
                 <div className="mb-3 flex gap-2" onClick={e => e.stopPropagation()}>
@@ -497,12 +525,41 @@ export default function Home() {
                   </button>
                 </div>
               )}
-              <div className="overflow-auto max-h-[85vh] max-w-[95vw]" onClick={e => e.stopPropagation()}>
-                <img
-                  src={capFull && capPreview.full_image_url ? capPreview.full_image_url : capPreview.image_url}
-                  alt="preview"
-                  className={capFull ? 'w-auto max-w-[95vw] rounded-xl' : 'max-h-[85vh] max-w-[95vw] rounded-xl object-contain'}
-                />
+              <div className="relative" onClick={e => e.stopPropagation()}>
+                <div className="overflow-auto max-h-[85vh] max-w-[95vw]">
+                  <img
+                    src={capFull && capPreview.full_image_url ? capPreview.full_image_url : capPreview.image_url}
+                    alt="preview"
+                    className={capFull ? 'w-auto max-w-[95vw] rounded-xl' : 'max-h-[85vh] max-w-[95vw] rounded-xl object-contain'}
+                  />
+                </div>
+                {/* 이미지 우측 하단: 캡처 교체 버튼 + 안내 패널 */}
+                <div className="absolute bottom-2 right-2 flex flex-col items-end gap-2">
+                  {capReplaceOpen && (
+                    <div className="w-72 rounded-xl bg-white shadow-xl border border-gray-200 p-3 text-left">
+                      <div className="text-sm font-bold text-gray-800 mb-1.5">
+                        캡처 이미지 교체 ({capFull && capPreview.full_image_url ? '전체보기' : '기본'})
+                      </div>
+                      <ul className="text-xs text-gray-600 leading-relaxed list-disc pl-4 mb-2.5 space-y-0.5">
+                        <li><b>권장 사이즈</b>: {capFull && capPreview.full_image_url
+                          ? '가로 390px (세로는 페이지 길이에 맞게 자유)'
+                          : '390 × 844px (원본 캡처와 동일한 세로형)'}</li>
+                        <li>형식 PNG · JPG · WEBP, <b>4MB 이하</b></li>
+                        <li>지금 화면에 보이는 {capFull && capPreview.full_image_url ? '전체보기' : '기본'} 이미지가 교체됩니다</li>
+                        <li className="text-red-500">교체 후 되돌릴 수 없으니, 원본이 필요하면 먼저 이미지를 저장해두세요</li>
+                      </ul>
+                      <label className={`block w-full text-center px-3 py-2 rounded-lg text-sm font-medium cursor-pointer transition-colors ${capReplacing ? 'bg-gray-200 text-gray-400 cursor-wait' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
+                        {capReplacing ? '업로드 중...' : '파일 선택해 교체'}
+                        <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden"
+                          disabled={capReplacing} onChange={handleReplaceFile} />
+                      </label>
+                    </div>
+                  )}
+                  <button onClick={() => setCapReplaceOpen(v => !v)}
+                    className="px-3 py-1.5 text-xs font-medium rounded-lg bg-white/90 text-gray-700 border border-gray-300 shadow hover:bg-white transition-colors">
+                    {capReplaceOpen ? '닫기' : '이미지 교체'}
+                  </button>
+                </div>
               </div>
             </div>
           )}
