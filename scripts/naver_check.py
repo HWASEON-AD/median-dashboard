@@ -259,31 +259,67 @@ def _find_section_for_link(link_element):
 
 def _find_post_element(driver, link_element):
     """
-    DOM을 거슬러 올라가 개별 포스팅 카드 요소를 반환한다.
-    ayunche-naver-capture/scraper.py _find_post_element() 그대로.
+    매칭된 링크에서 DOM을 거슬러 올라가 '그 글의 검색결과 카드' 요소를 반환한다.
+
+    ★ 빨간 테두리가 검색창+탭 헤더에 그려지는 버그 4번째 재발(2026-07-07) 근본수정.
+      기존 가드 headerish() 는 헤더를 오직 '셀렉터(input, [role=tablist] …)'로만 판별했다.
+      그러나 네이버 모바일 SERP 는 클래스명이 해시로 자주 바뀌고 A/B 변형이 많아,
+      검색창/탭이 그 셀렉터를 쓰지 않는 변형이 서빙되면 가드가 뚫린다. 그러면 walk 가
+      매칭 링크에서 위로 기어올라가다 '검색창+탭을 통째로 감싼 상단 컨테이너'까지 올라가
+      거기에 outline 을 입혀 검색창/탭에 빨간 테두리가 쳐졌다.
+      → 셀렉터(구조) 가드에 더해, 'DOM 구조와 무관한 위치 가드' 2종을 추가한다:
+        (구조) 검색창/탭/폼을 자손으로 품은 블록은 글 카드가 아님. (셀렉터 확장)
+        (위치A) 매칭 링크보다 1.3×뷰포트 이상 '위'에서 시작하는 블록은 카드가 아님
+                — 카드는 자기 링크를 품으므로 카드 상단은 링크 바로 위 수백px 안이다.
+                검색창+탭 헤더는 결과보다 수천px 위라 이 조건만으로도 원천 차단된다.
+        (위치B) 검색폼/탭바의 문서상 하단(headerBottom, 상단 700px 이내) 위쪽에서
+                시작하는 블록은 헤더/탭 zone.
+      셋 중 하나라도 걸리면 카드가 아니다. 마땅한 카드를 못 찾으면 상단 컨테이너로
+      올라가지 말고 매칭 링크 자체를 반환한다(최악의 경우에도 위치는 정확).
     """
     return driver.execute_script("""
         var start = arguments[0];
-        // 헤더/검색창/탭바/광고 컨테이너 여부 — 이런 블럭은 '글 카드'가 아니므로
-        // 절대 테두리 대상으로 고르지 않는다. (검색란에 빨간 테두리 쳐지던 버그 방어)
-        function headerish(node){
-            // 검색창/탭바가 들어있는 블럭 = 글 카드가 아님. 구조로만 판별한다.
-            // (클래스명 substring 매칭은 loader⊃ader, *-header 등 정상 카드를 오탐하므로 안 씀.
-            //  광고/헤더 링크는 이미 매칭 단계의 path 앵커링으로 후보에서 배제됨.)
-            if (!node || !node.querySelector) return false;
-            return !!node.querySelector('input, [role=tablist], [role=search], form[role=search]');
+        var vh = window.innerHeight || 844;
+        function dTop(el){ var r = el.getBoundingClientRect(); return r.top + window.pageYOffset; }
+        function dBot(el){ var r = el.getBoundingClientRect(); return r.bottom + window.pageYOffset; }
+
+        var linkTop = dTop(start);
+
+        // 검색폼/탭바의 문서상 하단 = 결과영역 시작선 (헤더/탭은 상단 700px 이내)
+        var headerBottom = 0;
+        var hEls = document.querySelectorAll(
+            'input, textarea, [role=search], [role=tablist], [role=tab], form, .sch, #_sch, .search_wrap');
+        for (var i = 0; i < hEls.length; i++) {
+            var b = dBot(hEls[i]);
+            if (b > headerBottom && b < 700) headerBottom = b;
         }
+
+        // 이 블록이 '글 카드가 아닌' 헤더/탭/상단 zone 인가? (구조·위치 중 하나라도 걸리면 제외)
+        function notACard(node){
+            if (!node || !node.querySelector) return true;
+            // (구조) 검색창/탭/폼을 자손으로 품으면 글 카드가 아님
+            if (node.querySelector('input, textarea, [role=tablist], [role=tab], [role=search], form, .sch, #_sch, .search_wrap'))
+                return true;
+            var top = dTop(node);
+            // (위치A) 매칭 링크보다 1.3×뷰포트 이상 위에서 시작 → 카드가 자기 링크를 품는다는 사실에 위배
+            if (linkTop - top > vh * 1.3) return true;
+            // (위치B) 검색폼/탭 하단선 위쪽에서 시작 → 헤더/탭 zone
+            if (headerBottom > 0 && top < headerBottom - 4) return true;
+            return false;
+        }
+
         var el = start;
         while (el && el !== document.body) {
             var parent = el.parentElement;
             if (!parent) break;
             var r = el.getBoundingClientRect();
             var pr = parent.getBoundingClientRect();
-            if (r.height >= 80 && pr.height > 0 && r.height < pr.height * 0.6 && !headerish(el)) {
+            if (r.height >= 80 && pr.height > 0 && r.height < pr.height * 0.6 && !notACard(el)) {
                 return el;
             }
             el = parent;
         }
+        // 카드 못 찾음 → 헤더로 올라가지 말고 매칭 링크 자체 반환 (최악의 경우에도 위치는 정확)
         return start;
     """, link_element)
 
