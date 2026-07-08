@@ -1,14 +1,19 @@
 'use client'
 import { useEffect, useState, useRef, useCallback } from 'react'
 import * as XLSX from 'xlsx'
+import { currentSource, currentContribution } from '@/lib/combined-views'
 
 interface Exposure { date: string; is_exposed: boolean }
 interface Keyword {
   id: string; keyword: string; product: string | null
-  blog_url: string | null; hwaseon_url: string | null
+  blog_url: string | null; hwaseon_url: string | null; image_host_url: string | null
   tab_type: string | null; status: string; brand: string | null
+  cafe_views: number | null; image_views: number | null
+  views_base: number | null; views_offset: number | null; combined_views: number
   median_daily_exposure: Exposure[]
 }
+// 검색량 응답 계약: volumes[키워드] = { pc, mobile, total }
+type Volume = { pc: number; mobile: number; total: number }
 
 const STATUSES = ['미노출', '노출중', '종료', '진행X']
 const BRANDS = ['메디안']
@@ -92,8 +97,8 @@ export default function AdminPage() {
   const [rows, setRows] = useState<Keyword[]>([])
   const [loading, setLoading] = useState(true)
   const [editId, setEditId] = useState<string | null>(null)
-  const [edit, setEdit] = useState({ keyword: '', product: '', blog_url: '', hwaseon_url: '', tab_type: '', status: '', brand: '메디안' })
-  const [newRow, setNew] = useState({ keyword: '', product: '', blog_url: '', hwaseon_url: '', tab_type: '', brand: '메디안' })
+  const [edit, setEdit] = useState({ keyword: '', product: '', blog_url: '', image_host_url: '', hwaseon_url: '', tab_type: '', status: '', brand: '메디안' })
+  const [newRow, setNew] = useState({ keyword: '', product: '', blog_url: '', image_host_url: '', hwaseon_url: '', tab_type: '', brand: '메디안' })
   const [pasteText, setPaste] = useState('')
   const [pasteMode, setPasteMode] = useState(false)
   const [showImport, setShowImport] = useState(false)
@@ -101,8 +106,10 @@ export default function AdminPage() {
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null)
   const [importing, setImporting] = useState(false)
+  const [refreshingViews, setRefreshingViews] = useState(false)
   const [clicks, setClicks] = useState<Record<string, number>>({})
-  const [cafeViews, setCafeViews] = useState<Record<string, number | null>>({})
+  const [volumes, setVolumes] = useState<Record<string, Volume>>({})
+  const [volLoading, setVolLoading] = useState(true)
   const [urlFilter, setUrlFilter] = useState('전체')
   const [productFilter, setProductFilter] = useState('제품 전체')
   const [brandFilter, setBrandFilter] = useState('브랜드 전체')
@@ -123,22 +130,48 @@ export default function AdminPage() {
       try { const res = await fetch(`/api/clicks?code=${code}`); const j = await res.json(); map[id] = j.totalVisits ?? 0 } catch { map[id] = 0 }
     }))
     setClicks(map)
-
-    // 카페 URL 조회수
-    const cafePosts = list.filter(p => p.blog_url?.includes('cafe.naver.com'))
-    const cafeMap: Record<string, number | null> = {}
-    await Promise.all(cafePosts.map(async p => {
-      try { const res = await fetch(`/api/cafe-views?url=${encodeURIComponent(p.blog_url!)}`); const j = await res.json(); cafeMap[p.id] = j.views ?? null } catch { cafeMap[p.id] = null }
-    }))
-    setCafeViews(cafeMap)
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // 검색량 조회 (keywords 로드와 독립적으로 마운트 시 1회) — 실패해도 다른 기능에 영향 없게 빈 객체 처리
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const r = await fetch('/api/search-volume')
+        const d = await r.json()
+        if (alive) setVolumes(d?.volumes || {})
+      } catch {
+        if (alive) setVolumes({})
+      } finally {
+        if (alive) setVolLoading(false)
+      }
+    })()
+    return () => { alive = false }
+  }, [])
 
   // 키워드 수정/추가 후 즉시 1회 노출 체크 트리거 (fire-and-forget, 실패해도 흐름 유지)
   function triggerCheck(postId: string) {
     fetch('/api/trigger-check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ post_id: postId }) })
       .catch(e => console.error('trigger-check 실패', e))
+  }
+
+  // 조회수 새로고침: 카페 조회수 + 이미지호스팅(총) 조회수를 서버에서 최신화한다.
+  // 삭제된 글/실패는 갱신하지 않아 기존 값이 유지된다.
+  async function refreshViews() {
+    if (refreshingViews) return
+    setRefreshingViews(true)
+    try {
+      const r = await fetch('/api/refresh-views', { method: 'POST' })
+      const d = await r.json().catch(() => ({}))
+      if (r.ok) { flash(`조회수 갱신 완료 (카페 ${d.cafeUpdated ?? 0} · 이미지 ${d.imageUpdated ?? 0}${d.kept ? ` · 유지 ${d.kept}` : ''})`, true); load() }
+      else flash(`갱신 실패: ${d.error || r.status}`, false)
+    } catch (e) {
+      flash(`갱신 오류: ${e instanceof Error ? e.message : String(e)}`, false)
+    } finally {
+      setRefreshingViews(false)
+    }
   }
 
   async function save(id: string) {
@@ -163,7 +196,7 @@ export default function AdminPage() {
       const created = await r.json().catch(() => null)
       // id가 있을 때만 트리거 (빈 문자열이면 GitHub Actions가 0건 매칭으로 헛돌므로 호출하지 않음)
       if (created?.id) triggerCheck(created.id)  // 추가 성공 후 새 post id로 1회 트리거
-      setNew({ keyword: '', product: '', blog_url: '', hwaseon_url: '', tab_type: '', brand: '메디안' }); load()
+      setNew({ keyword: '', product: '', blog_url: '', image_host_url: '', hwaseon_url: '', tab_type: '', brand: '메디안' }); load()
     } else flash('추가 실패', false)
   }
 
@@ -321,6 +354,10 @@ export default function AdminPage() {
           <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between flex-wrap gap-2">
             <span className="text-sm font-semibold text-gray-700">키워드 관리</span>
             <div className="flex items-center gap-2">
+              <button onClick={refreshViews} disabled={refreshingViews}
+                className="px-3 py-1 rounded text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40">
+                {refreshingViews ? '갱신 중…' : '조회수 새로고침'}
+              </button>
               <select value={brandFilter} onChange={e => setBrandFilter(e.target.value)}
                 className="border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none">
                 <option value="브랜드 전체">브랜드 전체</option>
@@ -343,7 +380,7 @@ export default function AdminPage() {
             <div className="text-center py-16 text-gray-400">로딩 중...</div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[1200px]">
+              <table className="w-full text-sm min-w-[1500px]">
                 <thead className="bg-gray-50 text-gray-500 text-xs border-b border-gray-100">
                   <tr>
                     <th className="text-left px-3 py-2 w-8 whitespace-nowrap">#</th>
@@ -351,11 +388,14 @@ export default function AdminPage() {
                     <th className="text-left px-3 py-2 whitespace-nowrap">상태</th>
                     <th className="text-left px-3 py-2 whitespace-nowrap">제품</th>
                     <th className="text-left px-3 py-2 whitespace-nowrap">키워드</th>
+                    <th className="text-right px-3 py-2 whitespace-nowrap" title="네이버 검색광고 API — 오늘 조회한 최근 30일 검색량">검색량</th>
                     <th className="text-left px-3 py-2 whitespace-nowrap">노출탭</th>
                     <th className="text-left px-3 py-2 whitespace-nowrap">발행URL</th>
+                    <th className="text-left px-3 py-2 whitespace-nowrap">이미지호스팅URL</th>
                     <th className="text-left px-3 py-2 whitespace-nowrap">제품링크URL</th>
                     <th className="text-right px-3 py-2 whitespace-nowrap">총 노출일</th>
-                    <th className="text-right px-3 py-2 whitespace-nowrap">카페 조회수</th>
+                    <th className="text-right px-3 py-2 whitespace-nowrap" title="발행URL이 바뀌어도 리셋되지 않는 통합(누적) 조회수">조회수</th>
+                    <th className="text-right px-3 py-2 whitespace-nowrap">총 조회수</th>
                     <th className="text-right px-3 py-2 whitespace-nowrap">총 클릭수</th>
                     <th className="px-3 py-2 w-16" />
                   </tr>
@@ -386,16 +426,19 @@ export default function AdminPage() {
                                   className="border border-blue-400 rounded px-2 py-1 text-xs w-full min-w-[80px]" />
                               </td>
                             ))}
+                            {/* 검색량: 편집 대상 아님 */}
+                            <td className="px-3 py-1.5 text-gray-300 text-xs text-right">-</td>
                             <td className="px-2 py-1.5">
                               <input value={edit.tab_type} onChange={e => setEdit(p => ({ ...p, tab_type: e.target.value }))}
                                 className="border border-blue-400 rounded px-2 py-1 text-xs w-full min-w-[60px]" />
                             </td>
-                            {(['blog_url', 'hwaseon_url'] as const).map(f => (
+                            {(['blog_url', 'image_host_url', 'hwaseon_url'] as const).map(f => (
                               <td key={f} className="px-2 py-1.5">
                                 <input value={edit[f]} onChange={e => setEdit(p => ({ ...p, [f]: e.target.value }))}
-                                  className="border border-blue-400 rounded px-2 py-1 text-xs w-full min-w-[100px]" />
+                                  className="border border-blue-400 rounded px-2 py-1 text-xs w-full min-w-[70px]" />
                               </td>
                             ))}
+                            <td className="px-3 py-1.5 text-gray-300 text-xs text-right">-</td>
                             <td className="px-3 py-1.5 text-gray-300 text-xs text-right">-</td>
                             <td className="px-3 py-1.5 text-gray-300 text-xs text-right">-</td>
                             <td className="px-3 py-1.5 text-gray-300 text-xs text-right">-</td>
@@ -419,22 +462,50 @@ export default function AdminPage() {
                             </td>
                             <td className="px-3 py-3 text-gray-600 text-xs whitespace-nowrap max-w-[120px] truncate">{row.product || '-'}</td>
                             <td className="px-3 py-3 font-medium text-gray-900 whitespace-nowrap">{row.keyword}</td>
+                            {/* 검색량 */}
+                            <td className="px-3 py-3 text-right whitespace-nowrap">
+                              {volumes[row.keyword]?.total != null
+                                ? <span className="text-xs font-semibold text-gray-700" title={`PC ${volumes[row.keyword].pc} / 모바일 ${volumes[row.keyword].mobile}`}>{volumes[row.keyword].total.toLocaleString()}</span>
+                                : volLoading
+                                  ? <span className="text-gray-300 text-xs">…</span>
+                                  : <span className="text-gray-300 text-xs">-</span>}
+                            </td>
                             <td className="px-3 py-3 text-gray-500 text-xs whitespace-nowrap">{row.tab_type || '-'}</td>
-                            <td className="px-3 py-3 max-w-[160px]">
+                            <td className="px-3 py-3 max-w-[140px]">
                               {row.blog_url
-                                ? <a href={row.blog_url} target="_blank" rel="noreferrer" className="text-blue-500 text-xs hover:underline truncate block max-w-[150px]">{row.blog_url}</a>
+                                ? <a href={row.blog_url} target="_blank" rel="noreferrer" className="text-blue-500 text-xs hover:underline truncate block max-w-[130px]">{row.blog_url}</a>
                                 : <span className="text-gray-300 text-xs">-</span>}
                             </td>
-                            <td className="px-3 py-3 max-w-[150px]">
+                            <td className="px-3 py-3 max-w-[130px]">
+                              {row.image_host_url
+                                ? <a href={row.image_host_url} target="_blank" rel="noreferrer" className="text-emerald-500 text-xs hover:underline truncate block max-w-[120px]">{row.image_host_url}</a>
+                                : <span className="text-gray-300 text-xs">-</span>}
+                            </td>
+                            <td className="px-3 py-3 max-w-[130px]">
                               {row.hwaseon_url
-                                ? <a href={row.hwaseon_url} target="_blank" rel="noreferrer" className="text-purple-500 text-xs hover:underline truncate block max-w-[140px]">{row.hwaseon_url}</a>
+                                ? <a href={row.hwaseon_url} target="_blank" rel="noreferrer" className="text-purple-500 text-xs hover:underline truncate block max-w-[120px]">{row.hwaseon_url}</a>
                                 : <span className="text-gray-400 text-xs">알수없음</span>}
                             </td>
                             <td className="px-3 py-3 text-right text-xs text-gray-600 whitespace-nowrap">{exposureDays > 0 ? `${exposureDays}일` : '-'}</td>
+                            {/* 조회수 (통합/누적) — combined_views만 표시 */}
                             <td className="px-3 py-3 text-right whitespace-nowrap">
-                              {row.blog_url?.includes('cafe.naver.com')
-                                ? cafeViews[row.id] != null
-                                  ? <span className="text-xs font-semibold text-blue-600">{(cafeViews[row.id] as number).toLocaleString()}</span>
+                              {(() => {
+                                // 통합(누적) 조회수: 카페든 블로그든 표시. 소스 없고 누적도 0이면 '-'
+                                const cv = row.combined_views ?? 0
+                                if (cv > 0 || currentSource(row) != null) {
+                                  return <span className="text-xs font-semibold text-blue-600"
+                                    title={`이전 누적 ${(row.views_base ?? 0).toLocaleString()} + 현재 ${currentContribution(row).toLocaleString()}`}>
+                                    {cv.toLocaleString()}
+                                  </span>
+                                }
+                                return <span className="text-gray-300 text-xs">-</span>
+                              })()}
+                            </td>
+                            {/* 총 조회수 (image_views raw) */}
+                            <td className="px-3 py-3 text-right whitespace-nowrap">
+                              {row.image_host_url
+                                ? row.image_views != null
+                                  ? <span className="text-xs font-semibold text-emerald-600">{row.image_views.toLocaleString()}</span>
                                   : <span className="text-gray-300 text-xs">-</span>
                                 : <span className="text-gray-200 text-xs">-</span>}
                             </td>
@@ -444,7 +515,7 @@ export default function AdminPage() {
                                 : <span className="text-gray-300 text-xs">-</span>}
                             </td>
                             <td className="px-3 py-3 whitespace-nowrap">
-                              <button onClick={() => { setEditId(row.id); setEdit({ keyword: row.keyword, product: row.product || '', blog_url: row.blog_url || '', hwaseon_url: row.hwaseon_url || '', tab_type: row.tab_type || '', status: row.status, brand: row.brand || '메디안' }) }}
+                              <button onClick={() => { setEditId(row.id); setEdit({ keyword: row.keyword, product: row.product || '', blog_url: row.blog_url || '', image_host_url: row.image_host_url || '', hwaseon_url: row.hwaseon_url || '', tab_type: row.tab_type || '', status: row.status, brand: row.brand || '메디안' }) }}
                                 className="text-xs text-gray-400 hover:text-gray-700 mr-2">수정</button>
                               <button onClick={() => del(row.id, row.keyword)}
                                 className="text-xs text-gray-300 hover:text-red-500">×</button>
@@ -463,7 +534,7 @@ export default function AdminPage() {
                         {BRANDS.map(b => <option key={b} value={b}>{b}</option>)}
                       </select>
                     </td>
-                    <td />
+                    <td /> {/* 상태 */}
                     {([['product', '제품명'], ['keyword', '키워드 (필수)']] as [string, string][]).map(([k, ph]) => (
                       <td key={k} className="px-2 py-2">
                         <input value={(newRow as Record<string, string>)[k]} onChange={e => setNew(p => ({ ...p, [k]: e.target.value }))}
@@ -471,28 +542,29 @@ export default function AdminPage() {
                           className="border border-gray-300 rounded px-2 py-1 text-xs w-full focus:outline-none focus:ring-1 focus:ring-blue-400" />
                       </td>
                     ))}
+                    <td /> {/* 검색량 */}
                     <td className="px-2 py-2">
                       <input value={newRow.tab_type} onChange={e => setNew(p => ({ ...p, tab_type: e.target.value }))}
                         placeholder="노출탭"
                         className="border border-gray-300 rounded px-2 py-1 text-xs w-full focus:outline-none focus:ring-1 focus:ring-blue-400" />
                     </td>
-                    {([['blog_url', '발행URL'], ['hwaseon_url', '제품링크URL']] as [string, string][]).map(([k, ph]) => (
+                    {([['blog_url', '발행URL'], ['image_host_url', '이미지호스팅URL'], ['hwaseon_url', '제품링크URL']] as [string, string][]).map(([k, ph]) => (
                       <td key={k} className="px-2 py-2">
                         <input value={(newRow as Record<string, string>)[k]} onChange={e => setNew(p => ({ ...p, [k]: e.target.value }))}
                           placeholder={ph}
                           className="border border-gray-300 rounded px-2 py-1 text-xs w-full focus:outline-none focus:ring-1 focus:ring-blue-400" />
                       </td>
                     ))}
-                    <td colSpan={3} />
+                    <td colSpan={4} />
                     <td className="px-2 py-2">
                       <button onClick={add} className="px-3 py-1 bg-green-600 text-white rounded text-xs hover:bg-green-700">추가</button>
                     </td>
                   </tr>
                   {filtered.length === 0 && rows.length > 0 && (
-                    <tr><td colSpan={12} className="text-center py-8 text-gray-400 text-sm">필터 결과 없음</td></tr>
+                    <tr><td colSpan={15} className="text-center py-8 text-gray-400 text-sm">필터 결과 없음</td></tr>
                   )}
                   {rows.length === 0 && (
-                    <tr><td colSpan={12} className="text-center py-10 text-gray-400">데이터 없음</td></tr>
+                    <tr><td colSpan={15} className="text-center py-10 text-gray-400">데이터 없음</td></tr>
                   )}
                 </tbody>
               </table>

@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
+import { isCafe, computeSnapshot } from '@/lib/combined-views'
+
+// 옛 구간 최종 조회수를 저장값 기반으로만 산출 (bulk라 라이브 fetch 안 함)
+function storedFinalViews(o: { blog_url: string | null; cafe_views: number | null; image_views: number | null }): number | null {
+  if (isCafe(o.blog_url)) return o.cafe_views
+  if (o.blog_url) return o.image_views
+  return null
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json()
@@ -45,33 +53,67 @@ export async function POST(req: NextRequest) {
   }
   const incoming = Array.from(dedupeMap.values())
 
-  // 기존 데이터 조회 — keyword + product + brand 조합으로 매칭
+  // 기존 데이터 조회 — keyword + product + brand 조합으로 매칭 (통합 조회수 스냅샷용 필드 포함)
   const { data: existing } = await supabaseAdmin
     .from('median_posts')
-    .select('id, keyword, product, brand')
+    .select('id, keyword, product, brand, blog_url, image_host_url, cafe_views, image_views, views_base, views_offset')
 
-  const existingMap = new Map<string, string>()
-  for (const e of existing || []) {
-    existingMap.set(`${e.keyword}|||${e.product ?? ''}|||${e.brand ?? '메디안'}`, e.id)
+  type OldRow = {
+    id: string; keyword: string; product: string | null; brand: string | null
+    blog_url: string | null; image_host_url: string | null
+    cafe_views: number | null; image_views: number | null
+    views_base: number | null; views_offset: number | null
+  }
+  const existingMap = new Map<string, OldRow>()
+  for (const e of (existing || []) as OldRow[]) {
+    existingMap.set(`${e.keyword}|||${e.product ?? ''}|||${e.brand ?? '메디안'}`, e)
   }
 
-  const toUpdate: { id: string; tab_type: string | null; blog_url: string | null; hwaseon_url: string | null; brand: string }[] = []
+  type UpdateRow = {
+    id: string; tab_type: string | null; blog_url: string | null; hwaseon_url: string | null; brand: string
+    views_base?: number; views_offset?: number; cafe_views?: null; image_views?: null
+  }
+  const toUpdate: UpdateRow[] = []
   const toInsert: { keyword: string; product: string | null; tab_type: string | null; blog_url: string | null; hwaseon_url: string | null; brand: string; status: string }[] = []
 
   for (const r of incoming) {
-    const id = existingMap.get(`${r.keyword}|||${r.product ?? ''}|||${r.brand}`)
-    if (id) {
-      toUpdate.push({ id, tab_type: r.tab_type, blog_url: r.blog_url, hwaseon_url: r.hwaseon_url, brand: r.brand })
+    const old = existingMap.get(`${r.keyword}|||${r.product ?? ''}|||${r.brand}`)
+    if (old) {
+      const u: UpdateRow = { id: old.id, tab_type: r.tab_type, blog_url: r.blog_url, hwaseon_url: r.hwaseon_url, brand: r.brand }
+      // 발행URL이 실제로 바뀌면 통합 조회수 스냅샷 (라이브 fetch 없이 저장값 기반)
+      const oldBlogUrl = old.blog_url || null
+      const newBlogUrl = r.blog_url || null
+      if (newBlogUrl !== oldBlogUrl) {
+        // import는 image_host_url을 건드리지 않음 → imageChanged=false (같은 이미지 재사용)
+        const snap = computeSnapshot({
+          oldBlogUrl,
+          newBlogUrl,
+          oldImageViews: old.image_views,
+          prevBase: old.views_base ?? 0,
+          prevOffset: old.views_offset ?? 0,
+          finalOldViews: storedFinalViews(old),
+          imageChanged: false,
+        })
+        u.views_base = snap.views_base
+        u.views_offset = snap.views_offset
+        if (snap.reset_cafe_views) u.cafe_views = null
+        if (snap.reset_image_views) u.image_views = null
+      }
+      toUpdate.push(u)
     } else {
       toInsert.push({ ...r, status: '미노출' })
     }
   }
 
   for (const u of toUpdate) {
-    await supabaseAdmin
-      .from('median_posts')
-      .update({ tab_type: u.tab_type, blog_url: u.blog_url, hwaseon_url: u.hwaseon_url, brand: u.brand })
-      .eq('id', u.id)
+    const patch: Record<string, string | number | null> = {
+      tab_type: u.tab_type, blog_url: u.blog_url, hwaseon_url: u.hwaseon_url, brand: u.brand,
+    }
+    if (u.views_base !== undefined) patch.views_base = u.views_base
+    if (u.views_offset !== undefined) patch.views_offset = u.views_offset
+    if (u.cafe_views !== undefined) patch.cafe_views = u.cafe_views
+    if (u.image_views !== undefined) patch.image_views = u.image_views
+    await supabaseAdmin.from('median_posts').update(patch).eq('id', u.id)
   }
 
   let insertedCount = 0
