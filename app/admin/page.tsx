@@ -427,8 +427,7 @@ export default function AdminPage() {
                     <th className="text-left px-3 py-2 whitespace-nowrap">이미지호스팅URL</th>
                     <th className="text-left px-3 py-2 whitespace-nowrap">제품링크URL</th>
                     <th className="text-right px-3 py-2 whitespace-nowrap">총 노출일</th>
-                    <th className="text-right px-3 py-2 whitespace-nowrap" title="발행URL이 바뀌어도 리셋되지 않는 통합(누적) 조회수">조회수</th>
-                    <th className="text-right px-3 py-2 whitespace-nowrap">총 조회수</th>
+                    <th className="text-right px-3 py-2 whitespace-nowrap" title="카페 + 이미지호스팅 + 과거보존 조회수를 모두 합한 누적값">총 조회수</th>
                     <th className="text-right px-3 py-2 whitespace-nowrap">총 클릭수</th>
                     <th className="px-3 py-2 w-16" />
                   </tr>
@@ -492,7 +491,6 @@ export default function AdminPage() {
                                 </div>
                               </td>
                             ))}
-                            <td className="px-3 py-1.5 text-gray-300 text-xs text-right">-</td>
                             <td className="px-3 py-1.5 text-gray-300 text-xs text-right">-</td>
                             <td className="px-3 py-1.5 text-gray-300 text-xs text-right">-</td>
                             <td className="px-3 py-1.5 text-gray-300 text-xs text-right">-</td>
@@ -560,14 +558,6 @@ export default function AdminPage() {
                                 return <span className="text-gray-300 text-xs">-</span>
                               })()}
                             </td>
-                            {/* 총 조회수 (image_views raw) */}
-                            <td className="px-3 py-3 text-right whitespace-nowrap">
-                              {row.image_host_url
-                                ? row.image_views != null
-                                  ? <span className="text-xs font-semibold text-emerald-600">{row.image_views.toLocaleString()}</span>
-                                  : <span className="text-gray-300 text-xs">-</span>
-                                : <span className="text-gray-200 text-xs">-</span>}
-                            </td>
                             <td className="px-3 py-3 text-right whitespace-nowrap">
                               {getCode(row.hwaseon_url) && clicks[row.id] != null
                                 ? <span className="text-xs font-semibold text-purple-700">{clicks[row.id].toLocaleString()}</span>
@@ -623,16 +613,16 @@ export default function AdminPage() {
                           className="border border-gray-300 rounded px-2 py-1 text-xs w-full focus:outline-none focus:ring-1 focus:ring-blue-400" />
                       </td>
                     ))}
-                    <td colSpan={4} />
+                    <td colSpan={3} />
                     <td className="px-2 py-2">
                       <button onClick={add} className="px-3 py-1 bg-green-600 text-white rounded text-xs hover:bg-green-700">추가</button>
                     </td>
                   </tr>
                   {filtered.length === 0 && rows.length > 0 && (
-                    <tr><td colSpan={15} className="text-center py-8 text-gray-400 text-sm">필터 결과 없음</td></tr>
+                    <tr><td colSpan={14} className="text-center py-8 text-gray-400 text-sm">필터 결과 없음</td></tr>
                   )}
                   {rows.length === 0 && (
-                    <tr><td colSpan={15} className="text-center py-10 text-gray-400">데이터 없음</td></tr>
+                    <tr><td colSpan={14} className="text-center py-10 text-gray-400">데이터 없음</td></tr>
                   )}
                 </tbody>
               </table>
