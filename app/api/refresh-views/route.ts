@@ -1,39 +1,60 @@
 import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import { getCafeReadCount, getImageHostViews } from '@/lib/views'
+import { allBlogUrls, allImageHostUrls, isCafe } from '@/lib/combined-views'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
 
-// 전체 키워드의 카페 조회수(cafe_views) + 이미지호스팅 총 조회수(image_views)를 최신화한다.
-// 유효한 숫자를 받은 경우에만 갱신하고, 실패/삭제(404 등)는 건드리지 않아 기존 값이 유지된다.
+// 전체 키워드의 조회수를 최신화한다.
+//  cafe_views  = 현재 발행URL + 과거 URL 중 "카페글"들의 readCount 합
+//  image_views = 현재 + 과거 이미지호스팅URL들의 조회수 합
+// 원칙: 살아있는 소스만 더한다. 전부 실패하면 갱신하지 않아 기존 값이 유지된다.
+//       (삭제된 카페글의 마지막 값은 views_base에 보존되어 있으므로 합계에서 빠져도 총합은 줄지 않는다)
 export async function POST() {
   const { data: posts, error } = await supabaseAdmin
     .from('median_posts')
-    .select('id, blog_url, image_host_url')
+    .select('id, blog_url, past_urls, image_host_url, past_image_host_urls')
 
   if (error) {
-    // image_host_url 컬럼이 아직 없으면 여기서 에러 → 마이그레이션 안내
-    return NextResponse.json({ error: error.message, hint: 'median_posts 조회수 컬럼 마이그레이션(ALTER TABLE) 실행 필요' }, { status: 500 })
+    return NextResponse.json({ error: error.message, hint: 'past_* 컬럼 마이그레이션 필요' }, { status: 500 })
   }
 
   let cafeUpdated = 0
   let imageUpdated = 0
   let kept = 0
+  let deadSources = 0
 
   await Promise.all(
-    (posts || []).map(async (p: { id: string; blog_url: string | null; image_host_url: string | null }) => {
+    (posts || []).map(async (p) => {
       const patch: Record<string, number> = {}
 
-      if (p.blog_url && p.blog_url.includes('cafe.naver.com')) {
-        const v = await getCafeReadCount(p.blog_url)
-        if (typeof v === 'number') { patch.cafe_views = v; cafeUpdated++ }
-        else kept++
+      // --- 카페 조회수 합 ---
+      const cafeUrls = allBlogUrls(p).filter(isCafe)
+      if (cafeUrls.length > 0) {
+        const values = await Promise.all(cafeUrls.map((u) => getCafeReadCount(u)))
+        const live = values.filter((v): v is number => typeof v === 'number')
+        deadSources += values.length - live.length
+        if (live.length > 0) {
+          patch.cafe_views = live.reduce((a, b) => a + b, 0)
+          cafeUpdated++
+        } else {
+          kept++
+        }
       }
-      if (p.image_host_url) {
-        const v = await getImageHostViews(p.image_host_url)
-        if (typeof v === 'number') { patch.image_views = v; imageUpdated++ }
-        else kept++
+
+      // --- 이미지호스팅 조회수 합 ---
+      const imgUrls = allImageHostUrls(p)
+      if (imgUrls.length > 0) {
+        const values = await Promise.all(imgUrls.map((u) => getImageHostViews(u)))
+        const live = values.filter((v): v is number => typeof v === 'number')
+        deadSources += values.length - live.length
+        if (live.length > 0) {
+          patch.image_views = live.reduce((a, b) => a + b, 0)
+          imageUpdated++
+        } else {
+          kept++
+        }
       }
 
       if (Object.keys(patch).length > 0) {
@@ -42,5 +63,5 @@ export async function POST() {
     }),
   )
 
-  return NextResponse.json({ ok: true, cafeUpdated, imageUpdated, kept })
+  return NextResponse.json({ ok: true, cafeUpdated, imageUpdated, kept, deadSources })
 }

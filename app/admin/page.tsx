@@ -1,13 +1,14 @@
 'use client'
 import { useEffect, useState, useRef, useCallback } from 'react'
 import * as XLSX from 'xlsx'
-import { currentSource, currentContribution } from '@/lib/combined-views'
+import { splitList, allBlogUrls, allImageHostUrls } from '@/lib/combined-views'
 
 interface Exposure { date: string; is_exposed: boolean }
 interface Keyword {
   id: string; keyword: string; product: string | null
   blog_url: string | null; hwaseon_url: string | null; image_host_url: string | null
   tab_type: string | null; status: string; brand: string | null
+  past_urls: string | null; past_image_host_urls: string | null; past_hwaseon_urls: string | null
   cafe_views: number | null; image_views: number | null
   views_base: number | null; views_offset: number | null; combined_views: number
   median_daily_exposure: Exposure[]
@@ -93,11 +94,24 @@ function parseXlsxExposure(buf: ArrayBuffer): ExposureRow[] {
   return result
 }
 
+// 지난 URL 개수 배지. 마우스를 올리면 전체 목록이 보인다.
+function PastBadge({ list }: { list: string[] }) {
+  if (list.length === 0) return null
+  return (
+    <span title={list.join('\n')}
+      className="inline-block mt-1 px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 text-[10px] cursor-help">
+      지난 {list.length}
+    </span>
+  )
+}
+
 export default function AdminPage() {
   const [rows, setRows] = useState<Keyword[]>([])
   const [loading, setLoading] = useState(true)
   const [editId, setEditId] = useState<string | null>(null)
   const [edit, setEdit] = useState({ keyword: '', product: '', blog_url: '', image_host_url: '', hwaseon_url: '', tab_type: '', status: '', brand: '메디안' })
+  // 지난 URL 편집 상태. 각 필드마다 입력칸 배열(기본 1칸, '+ 추가'로 늘림)
+  const [pastEdit, setPastEdit] = useState<{ urls: string[]; imgs: string[]; shs: string[] }>({ urls: [''], imgs: [''], shs: [''] })
   const [newRow, setNew] = useState({ keyword: '', product: '', blog_url: '', image_host_url: '', hwaseon_url: '', tab_type: '', brand: '메디안' })
   const [pasteText, setPaste] = useState('')
   const [pasteMode, setPasteMode] = useState(false)
@@ -124,10 +138,20 @@ export default function AdminPage() {
     const list: Keyword[] = Array.isArray(d) ? d : []
     setRows(list)
     setLoading(false)
-    const codes = list.map(p => ({ id: p.id, code: getCode(p.hwaseon_url) })).filter((x): x is { id: string; code: string } => !!x.code)
+    // 클릭수: 현재 + 과거 제품링크URL의 단축코드를 모두 합산
+    const targets = list
+      .map(p => ({
+        id: p.id,
+        codes: [p.hwaseon_url, ...splitList(p.past_hwaseon_urls)].map(getCode).filter((c): c is string => !!c),
+      }))
+      .filter(x => x.codes.length > 0)
     const map: Record<string, number> = {}
-    await Promise.all(codes.map(async ({ id, code }) => {
-      try { const res = await fetch(`/api/clicks?code=${code}`); const j = await res.json(); map[id] = j.totalVisits ?? 0 } catch { map[id] = 0 }
+    await Promise.all(targets.map(async ({ id, codes }) => {
+      try {
+        const res = await fetch(`/api/clicks?code=${codes.join(',')}`)
+        const j = await res.json()
+        map[id] = j.totalVisits ?? 0
+      } catch { map[id] = 0 }
     }))
     setClicks(map)
   }, [])
@@ -174,8 +198,17 @@ export default function AdminPage() {
     }
   }
 
+  // 빈 칸 제거 후 콤마로 합친다.
+  const joinPast = (list: string[]) => list.map(v => v.trim()).filter(Boolean).join(', ')
+
   async function save(id: string) {
-    const r = await fetch(`/api/keywords/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(edit) })
+    const payload = {
+      ...edit,
+      past_urls: joinPast(pastEdit.urls),
+      past_image_host_urls: joinPast(pastEdit.imgs),
+      past_hwaseon_urls: joinPast(pastEdit.shs),
+    }
+    const r = await fetch(`/api/keywords/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
     if (r.ok) {
       triggerCheck(id)  // 수정 성공 후 무조건 1회 트리거
       setEditId(null); load()
@@ -432,10 +465,31 @@ export default function AdminPage() {
                               <input value={edit.tab_type} onChange={e => setEdit(p => ({ ...p, tab_type: e.target.value }))}
                                 className="border border-blue-400 rounded px-2 py-1 text-xs w-full min-w-[60px]" />
                             </td>
-                            {(['blog_url', 'image_host_url', 'hwaseon_url'] as const).map(f => (
-                              <td key={f} className="px-2 py-1.5">
+                            {/* 발행URL / 이미지호스팅URL / 제품링크URL — 각 칸 아래에 '지난 URL' 입력(기본 1칸, + 추가로 늘림) */}
+                            {([['blog_url', 'urls'], ['image_host_url', 'imgs'], ['hwaseon_url', 'shs']] as const).map(([f, pk]) => (
+                              <td key={f} className="px-2 py-1.5 align-top">
                                 <input value={edit[f]} onChange={e => setEdit(p => ({ ...p, [f]: e.target.value }))}
-                                  className="border border-blue-400 rounded px-2 py-1 text-xs w-full min-w-[70px]" />
+                                  placeholder="현재 URL"
+                                  className="border border-blue-400 rounded px-2 py-1 text-xs w-full min-w-[120px]" />
+                                <div className="mt-1 space-y-1">
+                                  <div className="text-[10px] text-gray-400">지난 URL</div>
+                                  {pastEdit[pk].map((v, i) => (
+                                    <div key={i} className="flex gap-1">
+                                      <input value={v}
+                                        onChange={e => setPastEdit(p => ({ ...p, [pk]: p[pk].map((x, j) => j === i ? e.target.value : x) }))}
+                                        placeholder={`지난 URL ${i + 1}`}
+                                        className="border border-gray-300 rounded px-2 py-1 text-xs w-full min-w-[120px]" />
+                                      {pastEdit[pk].length > 1 && (
+                                        <button type="button" title="이 칸 삭제"
+                                          onClick={() => setPastEdit(p => ({ ...p, [pk]: p[pk].filter((_, j) => j !== i) }))}
+                                          className="px-1 text-gray-300 hover:text-red-500 text-xs">×</button>
+                                      )}
+                                    </div>
+                                  ))}
+                                  <button type="button"
+                                    onClick={() => setPastEdit(p => ({ ...p, [pk]: [...p[pk], ''] }))}
+                                    className="text-[10px] text-blue-600 hover:text-blue-800">+ 추가</button>
+                                </div>
                               </td>
                             ))}
                             <td className="px-3 py-1.5 text-gray-300 text-xs text-right">-</td>
@@ -475,26 +529,31 @@ export default function AdminPage() {
                               {row.blog_url
                                 ? <a href={row.blog_url} target="_blank" rel="noreferrer" className="text-blue-500 text-xs hover:underline truncate block max-w-[130px]">{row.blog_url}</a>
                                 : <span className="text-gray-300 text-xs">-</span>}
+                              <PastBadge list={splitList(row.past_urls)} />
                             </td>
                             <td className="px-3 py-3 max-w-[130px]">
                               {row.image_host_url
                                 ? <a href={row.image_host_url} target="_blank" rel="noreferrer" className="text-emerald-500 text-xs hover:underline truncate block max-w-[120px]">{row.image_host_url}</a>
                                 : <span className="text-gray-300 text-xs">-</span>}
+                              <PastBadge list={splitList(row.past_image_host_urls)} />
                             </td>
                             <td className="px-3 py-3 max-w-[130px]">
                               {row.hwaseon_url
                                 ? <a href={row.hwaseon_url} target="_blank" rel="noreferrer" className="text-purple-500 text-xs hover:underline truncate block max-w-[120px]">{row.hwaseon_url}</a>
                                 : <span className="text-gray-400 text-xs">알수없음</span>}
+                              <PastBadge list={splitList(row.past_hwaseon_urls)} />
                             </td>
                             <td className="px-3 py-3 text-right text-xs text-gray-600 whitespace-nowrap">{exposureDays > 0 ? `${exposureDays}일` : '-'}</td>
                             {/* 조회수 (통합/누적) — combined_views만 표시 */}
                             <td className="px-3 py-3 text-right whitespace-nowrap">
                               {(() => {
-                                // 통합(누적) 조회수: 카페든 블로그든 표시. 소스 없고 누적도 0이면 '-'
+                                // 통합 조회수 = 카페 합 + 이미지호스팅 합 + 라이브로 못 구하는 과거분(base)
                                 const cv = row.combined_views ?? 0
-                                if (cv > 0 || currentSource(row) != null) {
+                                if (cv > 0) {
+                                  const nUrl = allBlogUrls(row).length
+                                  const nImg = allImageHostUrls(row).length
                                   return <span className="text-xs font-semibold text-blue-600"
-                                    title={`이전 누적 ${(row.views_base ?? 0).toLocaleString()} + 현재 ${currentContribution(row).toLocaleString()}`}>
+                                    title={`카페 ${(row.cafe_views ?? 0).toLocaleString()} + 이미지 ${(row.image_views ?? 0).toLocaleString()} + 과거보존 ${(row.views_base ?? 0).toLocaleString()}  (URL ${nUrl}개 / 이미지 ${nImg}개)`}>
                                     {cv.toLocaleString()}
                                   </span>
                                 }
@@ -515,7 +574,16 @@ export default function AdminPage() {
                                 : <span className="text-gray-300 text-xs">-</span>}
                             </td>
                             <td className="px-3 py-3 whitespace-nowrap">
-                              <button onClick={() => { setEditId(row.id); setEdit({ keyword: row.keyword, product: row.product || '', blog_url: row.blog_url || '', image_host_url: row.image_host_url || '', hwaseon_url: row.hwaseon_url || '', tab_type: row.tab_type || '', status: row.status, brand: row.brand || '메디안' }) }}
+                              <button onClick={() => {
+                                setEditId(row.id)
+                                setEdit({ keyword: row.keyword, product: row.product || '', blog_url: row.blog_url || '', image_host_url: row.image_host_url || '', hwaseon_url: row.hwaseon_url || '', tab_type: row.tab_type || '', status: row.status, brand: row.brand || '메디안' })
+                                const atLeastOne = (l: string[]) => (l.length ? l : [''])
+                                setPastEdit({
+                                  urls: atLeastOne(splitList(row.past_urls)),
+                                  imgs: atLeastOne(splitList(row.past_image_host_urls)),
+                                  shs: atLeastOne(splitList(row.past_hwaseon_urls)),
+                                })
+                              }}
                                 className="text-xs text-gray-400 hover:text-gray-700 mr-2">수정</button>
                               <button onClick={() => del(row.id, row.keyword)}
                                 className="text-xs text-gray-300 hover:text-red-500">×</button>

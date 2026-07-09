@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import { combinedViews } from '@/lib/combined-views'
+import { fetchAllRows } from '@/lib/fetch-all'
 
 export async function GET() {
   // 두 테이블 별도 조회 후 코드에서 합치기 (nested select 관계 인식 문제 우회)
@@ -11,9 +12,10 @@ export async function GET() {
 
   if (postsErr) return NextResponse.json({ error: postsErr.message }, { status: 500 })
 
-  const { data: exposures } = await supabaseAdmin
-    .from('median_daily_exposure')
-    .select('post_id, date')
+  // ⚠️ PostgREST 1000행 제한 → 페이지네이션 필수
+  const exposures = await fetchAllRows<{ post_id: string; date: string }>(() =>
+    supabaseAdmin.from('median_daily_exposure').select('post_id, date'),
+  )
 
   // 포스트별 노출 기록 합치기 (presence = 노출, is_exposed는 항상 true)
   const exposureMap: Record<string, { date: string; is_exposed: boolean }[]> = {}

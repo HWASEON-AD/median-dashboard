@@ -54,12 +54,12 @@ def log(msg: str):
 # ── Supabase 연동 ──────────────────────────────────────────────
 
 def get_posts(post_id: str | None = None) -> list[dict]:
-    """blog_url 있는 포스트 조회 (상태 무관). post_id 지정 시 그 1건만 (즉시 1회 실행용)"""
+    """발행URL 또는 과거URL이 있는 포스트 조회 (상태 무관). post_id 지정 시 그 1건만 (즉시 1회 실행용)"""
     filter_q = f'&id=eq.{post_id}' if post_id else ''
     r = requests.get(
         f'{SUPABASE_URL}/rest/v1/median_posts'
-        '?select=id,keyword,blog_url,tab_type,brand,product,hwaseon_url'
-        '&blog_url=not.is.null'
+        '?select=id,keyword,blog_url,past_urls,tab_type,brand,product,hwaseon_url'
+        '&or=(blog_url.not.is.null,past_urls.not.is.null)'
         + filter_q,
         headers=SB_HEADERS,
         timeout=10
@@ -211,6 +211,11 @@ def parse_url(url: str) -> dict:
     m = re.search(r"cafe\.naver\.com/([^/?#]+)/(\d+)", n)
     if m:
         return {"type": "cafe", "id": m.group(1), "post_no": m.group(2)}
+    # 지식인: kin.naver.com/qna/detail.naver?...&docId=489653710 (docId가 글 고유번호)
+    m = re.search(r"kin\.naver\.com.*?[?&]docId=(\d+)", n, re.IGNORECASE)
+    if m:
+        d = re.search(r"[?&]dirId=(\d+)", n, re.IGNORECASE)
+        return {"type": "kin", "id": d.group(1) if d else "", "post_no": m.group(1)}
     return result
 
 
@@ -578,14 +583,15 @@ def _wait_for_ugc(driver, timeout: float = 12.0):
         time.sleep(0.5)
 
 
-def check_exposed(driver, keyword: str, blog_url: str):
+def check_exposed(driver, keyword: str, blog_url: str, past_urls: str = ''):
     """네이버 모바일 검색 → URL 매칭 → 노출여부 + (빨간박스 뷰포트 캡처, 전체페이지 세로 캡처) 반환.
     반환: (is_exposed: bool, img_bytes|None, full_bytes|None)
 
     발행URL 칸에 콤마(,)로 여러 URL을 넣으면, 그중 하나라도 검색결과에 노출돼 있으면
     노출로 보고 캡처한다. 여러 개가 동시에 노출된 경우 사용자가 적은 '앞쪽' URL을 우선해
     그것만 캡처한다."""
-    urls = _split_urls(blog_url)
+    # 발행URL(콤마 허용) 먼저, 그다음 과거URL 순서. 첫 매칭에서 중단한다.
+    urls = _split_urls(blog_url) + [u for u in _split_urls(past_urls) if u not in _split_urls(blog_url)]
     if not urls:
         return False, None, None
 
@@ -740,15 +746,16 @@ def main(post_id: str | None = None):
     try:
         for i, post in enumerate(posts):
             kw = post['keyword']
-            url = post['blog_url']
-            # 발행URL이 콤마로 여러 개면 보조 로직(카페 조회수 등)은 앞쪽 URL 기준
-            url_list = _split_urls(url)
+            url = post.get('blog_url') or ''
+            past = post.get('past_urls') or ''
+            # 보조 로직(카페 조회수 등)은 앞쪽 URL 기준
+            url_list = _split_urls(url) + _split_urls(past)
             primary_url = url_list[0] if url_list else url
             post_id = post['id']
             log(f"[{i+1}/{len(posts)}] {kw}")
 
             try:
-                is_exposed, img_bytes, full_bytes = check_exposed(driver, kw, url)
+                is_exposed, img_bytes, full_bytes = check_exposed(driver, kw, url, past)
             except Exception as e:
                 log(f"  오류: {e}")
                 is_exposed, img_bytes, full_bytes = False, None, None

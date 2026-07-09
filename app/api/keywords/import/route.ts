@@ -1,13 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
-import { isCafe, computeSnapshot } from '@/lib/combined-views'
-
-// 옛 구간 최종 조회수를 저장값 기반으로만 산출 (bulk라 라이브 fetch 안 함)
-function storedFinalViews(o: { blog_url: string | null; cafe_views: number | null; image_views: number | null }): number | null {
-  if (isCafe(o.blog_url)) return o.cafe_views
-  if (o.blog_url) return o.image_views
-  return null
-}
+import { splitList } from '@/lib/combined-views'
 
 export async function POST(req: NextRequest) {
   const body = await req.json()
@@ -56,13 +49,12 @@ export async function POST(req: NextRequest) {
   // 기존 데이터 조회 — keyword + product + brand 조합으로 매칭 (통합 조회수 스냅샷용 필드 포함)
   const { data: existing } = await supabaseAdmin
     .from('median_posts')
-    .select('id, keyword, product, brand, blog_url, image_host_url, cafe_views, image_views, views_base, views_offset')
+    .select('id, keyword, product, brand, blog_url, past_urls, hwaseon_url, past_hwaseon_urls')
 
   type OldRow = {
     id: string; keyword: string; product: string | null; brand: string | null
-    blog_url: string | null; image_host_url: string | null
-    cafe_views: number | null; image_views: number | null
-    views_base: number | null; views_offset: number | null
+    blog_url: string | null; past_urls: string | null
+    hwaseon_url: string | null; past_hwaseon_urls: string | null
   }
   const existingMap = new Map<string, OldRow>()
   for (const e of (existing || []) as OldRow[]) {
@@ -71,7 +63,14 @@ export async function POST(req: NextRequest) {
 
   type UpdateRow = {
     id: string; tab_type: string | null; blog_url: string | null; hwaseon_url: string | null; brand: string
-    views_base?: number; views_offset?: number; cafe_views?: null; image_views?: null
+    past_urls?: string | null; past_hwaseon_urls?: string | null
+  }
+
+  // 옛 값을 과거 목록 앞에 밀어넣고 중복 제거 (현재 값과 같으면 넣지 않음)
+  const pushPast = (past: string | null, oldVal: string | null, newVal: string | null) => {
+    const list = splitList(past)
+    if (oldVal && oldVal !== newVal && !list.includes(oldVal)) list.unshift(oldVal)
+    return list.filter(u => u !== newVal).join(', ') || null
   }
   const toUpdate: UpdateRow[] = []
   const toInsert: { keyword: string; product: string | null; tab_type: string | null; blog_url: string | null; hwaseon_url: string | null; brand: string; status: string }[] = []
@@ -80,24 +79,13 @@ export async function POST(req: NextRequest) {
     const old = existingMap.get(`${r.keyword}|||${r.product ?? ''}|||${r.brand}`)
     if (old) {
       const u: UpdateRow = { id: old.id, tab_type: r.tab_type, blog_url: r.blog_url, hwaseon_url: r.hwaseon_url, brand: r.brand }
-      // 발행URL이 실제로 바뀌면 통합 조회수 스냅샷 (라이브 fetch 없이 저장값 기반)
-      const oldBlogUrl = old.blog_url || null
-      const newBlogUrl = r.blog_url || null
-      if (newBlogUrl !== oldBlogUrl) {
-        // import는 image_host_url을 건드리지 않음 → imageChanged=false (같은 이미지 재사용)
-        const snap = computeSnapshot({
-          oldBlogUrl,
-          newBlogUrl,
-          oldImageViews: old.image_views,
-          prevBase: old.views_base ?? 0,
-          prevOffset: old.views_offset ?? 0,
-          finalOldViews: storedFinalViews(old),
-          imageChanged: false,
-        })
-        u.views_base = snap.views_base
-        u.views_offset = snap.views_offset
-        if (snap.reset_cafe_views) u.cafe_views = null
-        if (snap.reset_image_views) u.image_views = null
+      // 발행URL/제품링크URL이 바뀌면 옛 값을 past_*로 이관한다.
+      // (views_base는 절대 건드리지 않는다 — 조회수는 현재+과거 URL을 refresh-views가 다시 합산한다)
+      if ((r.blog_url || null) !== (old.blog_url || null)) {
+        u.past_urls = pushPast(old.past_urls, old.blog_url, r.blog_url || null)
+      }
+      if ((r.hwaseon_url || null) !== (old.hwaseon_url || null)) {
+        u.past_hwaseon_urls = pushPast(old.past_hwaseon_urls, old.hwaseon_url, r.hwaseon_url || null)
       }
       toUpdate.push(u)
     } else {
@@ -109,10 +97,8 @@ export async function POST(req: NextRequest) {
     const patch: Record<string, string | number | null> = {
       tab_type: u.tab_type, blog_url: u.blog_url, hwaseon_url: u.hwaseon_url, brand: u.brand,
     }
-    if (u.views_base !== undefined) patch.views_base = u.views_base
-    if (u.views_offset !== undefined) patch.views_offset = u.views_offset
-    if (u.cafe_views !== undefined) patch.cafe_views = u.cafe_views
-    if (u.image_views !== undefined) patch.image_views = u.image_views
+    if (u.past_urls !== undefined) patch.past_urls = u.past_urls
+    if (u.past_hwaseon_urls !== undefined) patch.past_hwaseon_urls = u.past_hwaseon_urls
     await supabaseAdmin.from('median_posts').update(patch).eq('id', u.id)
   }
 
