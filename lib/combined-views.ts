@@ -3,9 +3,11 @@
 // 개념 (2026-07-09 변경)
 //   한 키워드는 현재 발행URL 1개 + 과거 URL 여러 개(past_urls, 콤마)를 가진다.
 //   조회수 = 카페 readCount 합(현재+과거 URL 중 카페)
+//          + 지식인 조회수 합(현재+과거 URL 중 지식인)
 //          + 이미지호스팅 조회수 합(image_host_url + past_image_host_urls)
 //          + views_base
-//   앞의 두 합계는 /api/refresh-views가 라이브로 긁어 cafe_views / image_views에 "합계"로 저장한다.
+//   카페+지식인 합계는 cafe_views에, 이미지호스팅 합계는 image_views에
+//   /api/refresh-views가 라이브로 긁어 "합계"로 저장한다.
 //   views_base는 라이브로 구할 수 없는 값만 담는다 (삭제된 카페글, 이미지호스팅링크 없는 블로그글, 소스 리셋).
 //
 // ⚠️ 순수 함수만 (fetch·DB·server-only import 금지) — 클라이언트 컴포넌트에서도 import 가능해야 함
@@ -30,6 +32,11 @@ export function splitList(s: string | null | undefined): string[] {
 // 카페 URL 여부
 export function isCafe(url: string | null | undefined): boolean {
   return !!url && url.includes('cafe.naver.com')
+}
+
+// 지식인 URL 여부
+export function isKin(url: string | null | undefined): boolean {
+  return !!url && url.includes('kin.naver.com')
 }
 
 // 현재 + 과거 발행URL 전체 (노출 확인·카페 조회수 합산 대상). 순서: 현재 → 과거

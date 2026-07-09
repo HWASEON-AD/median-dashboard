@@ -61,3 +61,21 @@ export async function getImageHostViews(imageHostUrl: string): Promise<number | 
     return null
   }
 }
+
+// 네이버 지식인 조회수 조회
+// 상세 페이지 HTML의 `<span class="infoItem">조회수 240</span>` 에서 숫자 추출
+// 반환: 조회수(number) / 실패·삭제면 null
+export async function getKinViews(kinUrl: string): Promise<number | null> {
+  if (!kinUrl || !kinUrl.includes('kin.naver.com')) return null
+  try {
+    const r = await fetch(kinUrl, { headers: { 'User-Agent': DESKTOP_UA }, cache: 'no-store' })
+    if (!r.ok) return null
+    const html = await r.text()
+    const m = html.match(/조회수\s*([\d,]+)/)
+    if (!m) return null
+    const n = Number(m[1].replace(/,/g, ''))
+    return Number.isFinite(n) ? n : null
+  } catch {
+    return null
+  }
+}
