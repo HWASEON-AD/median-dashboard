@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import Link from 'next/link'
 
 interface Exposure { date: string; is_exposed: boolean }
@@ -76,6 +76,16 @@ export default function Home() {
   const [capPreview, setCapPreview] = useState<DailyCapture | null>(null)
   const [capFull, setCapFull] = useState(false)  // 프리뷰에서 전체페이지 보기 토글
   const [capReplaceOpen, setCapReplaceOpen] = useState(false)  // 이미지 교체 안내 패널
+  // 캡처 수동 추가 모달
+  const [addOpen, setAddOpen] = useState(false)
+  const [addDate, setAddDate] = useState(toStr(new Date()))
+  const [addBrand, setAddBrand] = useState('')
+  const [addProduct, setAddProduct] = useState('')
+  const [addPostId, setAddPostId] = useState('')
+  const [addMode, setAddMode] = useState<'basic' | 'full'>('basic')
+  const [addSaving, setAddSaving] = useState(false)
+  const [addMsg, setAddMsg] = useState<{ text: string; ok: boolean } | null>(null)
+  const addFileRef = useRef<HTMLInputElement>(null)
   const [capReplacing, setCapReplacing] = useState(false)      // 교체 업로드 진행중
 
   const range = rangeMode === 'custom' ? { start: customStart, end: customEnd } : calcRange(rangeMode)
@@ -146,6 +156,42 @@ export default function Home() {
   const avgDays = posts.length === 0 ? 0 :
     Math.round(posts.reduce((a, p) => a + (p.median_daily_exposure || []).filter(e => e.is_exposed).length, 0) / posts.length)
   const totalClicks = Object.values(clicks).reduce((a, b) => a + b, 0)
+
+  // 캡처 수동 추가: 선택한 키워드·날짜에 사진을 올리고 노출 기록도 함께 남긴다
+  async function submitAddCapture() {
+    const file = addFileRef.current?.files?.[0]
+    if (!addPostId) return setAddMsg({ text: '키워드를 선택하세요.', ok: false })
+    if (!file) return setAddMsg({ text: '이미지 파일을 선택하세요.', ok: false })
+    setAddSaving(true); setAddMsg(null)
+    try {
+      const fd = new FormData()
+      fd.append('post_id', addPostId)
+      fd.append('date', addDate)
+      fd.append('mode', addMode)
+      fd.append('file', file)
+      const r = await fetch('/api/captures/add', { method: 'POST', body: fd })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || String(r.status))
+      setAddMsg({ text: d.created ? '캡처 추가 완료 (노출 기록도 함께 저장)' : '기존 캡처 이미지 갱신 완료', ok: true })
+      if (addFileRef.current) addFileRef.current.value = ''
+      loadCaptures(addDate)
+      load()   // 총 노출일 갱신 반영
+    } catch (e) {
+      setAddMsg({ text: `실패: ${e instanceof Error ? e.message : String(e)}`, ok: false })
+    } finally {
+      setAddSaving(false)
+    }
+  }
+
+  // 추가 모달용 드롭다운 옵션 (있는 정보에서만 선택)
+  const addBrands = Array.from(new Set(posts.map(p => p.brand || '아모스'))).sort()
+  const addProducts = Array.from(new Set(
+    posts.filter(p => !addBrand || (p.brand || '아모스') === addBrand).map(p => p.product || '').filter(Boolean),
+  )).sort()
+  const addKeywords = posts.filter(p =>
+    (!addBrand || (p.brand || '아모스') === addBrand) && (!addProduct || (p.product || '') === addProduct),
+  )
+  const addSelectedPost = posts.find(p => p.id === addPostId) || null
 
   function inRange(e: Exposure) { return e.is_exposed && e.date >= range.start && e.date <= range.end }
 
@@ -487,7 +533,107 @@ export default function Home() {
                 </button>
               ))}
             </div>
+            <button onClick={() => { setAddDate(capDate); setAddMsg(null); setAddOpen(true) }}
+              className="ml-auto px-3 py-1.5 text-sm rounded bg-green-600 text-white hover:bg-green-700">
+              + 캡처 추가
+            </button>
           </div>
+
+          {/* 캡처 수동 추가 모달 — 있는 정보에서 드롭다운으로 고른다 */}
+          {addOpen && (
+            <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+              onClick={() => !addSaving && setAddOpen(false)}>
+              <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-5" onClick={e => e.stopPropagation()}>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-base font-bold text-gray-900">캡처 추가</h3>
+                  <button onClick={() => setAddOpen(false)} className="text-gray-400 hover:text-gray-700">✕</button>
+                </div>
+
+                <div className="space-y-3 text-sm">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">날짜</label>
+                    <input type="date" value={addDate} onChange={e => setAddDate(e.target.value)}
+                      className="border border-gray-300 rounded px-2 py-1.5 w-full" />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">브랜드</label>
+                    <select value={addBrand}
+                      onChange={e => { setAddBrand(e.target.value); setAddProduct(''); setAddPostId('') }}
+                      className="border border-gray-300 rounded px-2 py-1.5 w-full">
+                      <option value="">전체</option>
+                      {addBrands.map(b => <option key={b} value={b}>{b}</option>)}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">제품</label>
+                    <select value={addProduct}
+                      onChange={e => { setAddProduct(e.target.value); setAddPostId('') }}
+                      className="border border-gray-300 rounded px-2 py-1.5 w-full">
+                      <option value="">전체</option>
+                      {addProducts.map(pr => <option key={pr} value={pr}>{pr}</option>)}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">검색어 (키워드)</label>
+                    <select value={addPostId} onChange={e => setAddPostId(e.target.value)}
+                      className="border border-gray-300 rounded px-2 py-1.5 w-full">
+                      <option value="">선택하세요 ({addKeywords.length}개)</option>
+                      {addKeywords.map(p => (
+                        <option key={p.id} value={p.id}>{p.keyword}{p.product ? ` — ${p.product}` : ''}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">노출탭</label>
+                    <input readOnly value={addSelectedPost?.tab_type || (addPostId ? '(없음)' : '키워드를 먼저 선택')}
+                      className="border border-gray-200 bg-gray-50 rounded px-2 py-1.5 w-full text-gray-500" />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">이미지 종류</label>
+                    <div className="flex gap-2">
+                      {([['basic','기본 (390×844)'],['full','전체보기 (가로 390)']] as const).map(([m, l]) => (
+                        <button key={m} type="button" onClick={() => setAddMode(m)}
+                          className={`flex-1 px-2 py-1.5 rounded border text-xs ${addMode === m ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600'}`}>
+                          {l}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">이미지 파일 (PNG·JPG·WEBP, 4MB 이하)</label>
+                    <input ref={addFileRef} type="file" accept="image/png,image/jpeg,image/webp"
+                      className="w-full text-xs" />
+                  </div>
+
+                  <p className="text-[11px] text-gray-400 leading-relaxed">
+                    저장하면 해당 날짜의 <b>노출 기록</b>도 함께 남습니다 (총 노출일 +1).
+                    같은 날짜·키워드 캡처가 이미 있으면 이미지만 교체됩니다.
+                  </p>
+
+                  {addMsg && (
+                    <div className={`text-xs px-2 py-1.5 rounded ${addMsg.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                      {addMsg.text}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex justify-end gap-2 mt-5">
+                  <button onClick={() => setAddOpen(false)} disabled={addSaving}
+                    className="px-3 py-1.5 text-sm text-gray-500 hover:text-gray-700">취소</button>
+                  <button onClick={submitAddCapture} disabled={addSaving || !addPostId}
+                    className="px-4 py-1.5 text-sm rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-40">
+                    {addSaving ? '저장 중...' : '저장'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           {capLoading ? (
             <div className="text-center py-20 text-gray-400">로딩 중...</div>
           ) : capBrand === '전체' ? (
