@@ -545,9 +545,13 @@ def _capture_with_css_border(driver, link_element, keyword: str):
     # 5. 전체 화면(뷰포트) 캡처 — 매칭 글이 중앙에 테두리와 함께 보임
     screenshot_bytes = driver.get_screenshot_as_png()
 
-    # 6. 전체 페이지 세로 캡처 (안전장치) — outline이 아직 입혀진 상태에서 통째로.
-    #    이 안에서 페이지를 끝까지 스크롤하므로 반드시 뷰포트 캡처 '이후'에 한다.
-    full_bytes = _capture_full_page(driver)
+    # 6. 전체 페이지 세로 캡처 — 2026-07-23 중단.
+    #    한 장에 8~12MB라 Supabase 무료 저장공간(1GB)의 92%를 차지했고, 같은
+    #    프로젝트를 쓰는 내지마요 계약서 서비스까지 함께 멈출 위험이 있었다.
+    #    대시보드에서 [전체보기] 토글로만 쓰이던 부가 이미지라 생성을 끊는다.
+    #    되살리려면 아래 한 줄을 _capture_full_page(driver) 로 되돌리면 된다
+    #    (함수 정의는 그대로 남겨둠).
+    full_bytes = None
 
     # 7. 원래 스타일 복구
     try:
